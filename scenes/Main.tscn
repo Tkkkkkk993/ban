@@ -1,0 +1,195 @@
+[gd_scene format=3 uid="uid://dbotgqgi0ohss"]
+
+[ext_resource type="Script" uid="uid://d34711rmgm66k" path="res://scripts/main.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://bw471x5iamfaf" path="res://scripts/ban_list_panel.gd" id="2_banpanel"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_root"]
+bg_color = Color(0.101961, 0.101961, 0.101961, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_header"]
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+bg_color = Color(0.113725, 0.113725, 0.113725, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_toolbar"]
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+bg_color = Color(0.129412, 0.129412, 0.129412, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sep"]
+content_margin_top = 1.0
+content_margin_bottom = 1.0
+bg_color = Color(0.227451, 0.227451, 0.227451, 1)
+
+[node name="Main" type="Control" unique_id=575594396]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="Root" type="PanelContainer" parent="." unique_id=516131701]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_root")
+
+[node name="VBox" type="VBoxContainer" parent="Root" unique_id=567643939]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="HeaderBox" type="PanelContainer" parent="Root/VBox" unique_id=345389708]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_header")
+
+[node name="HeaderRow" type="HBoxContainer" parent="Root/VBox/HeaderBox" unique_id=1031923629]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="ModeLabel" type="Label" parent="Root/VBox/HeaderBox/HeaderRow" unique_id=1027604237]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.419608, 0, 1)
+theme_override_font_sizes/font_size = 14
+text = "玩家模式"
+vertical_alignment = 1
+
+[node name="NameLabel" type="Label" parent="Root/VBox/HeaderBox/HeaderRow" unique_id=1163049754]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.909804, 0.909804, 0.909804, 1)
+theme_override_font_sizes/font_size = 13
+text = "玩家：未命名"
+vertical_alignment = 1
+
+[node name="Spacer" type="Control" parent="Root/VBox/HeaderBox/HeaderRow" unique_id=1228095478]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="OrganizerBtn" type="Button" parent="Root/VBox/HeaderBox/HeaderRow" unique_id=1354561159]
+layout_mode = 2
+text = "组织者模式"
+
+[node name="ToolbarWrap" type="PanelContainer" parent="Root/VBox" unique_id=849771876]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_toolbar")
+
+[node name="ToolbarScroll" type="ScrollContainer" parent="Root/VBox/ToolbarWrap" unique_id=1642336981]
+custom_minimum_size = Vector2(0, 46)
+layout_mode = 2
+vertical_scroll_mode = 0
+
+[node name="Toolbar" type="HBoxContainer" parent="Root/VBox/ToolbarWrap/ToolbarScroll" unique_id=390937434]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Divider" type="HSeparator" parent="Root/VBox" unique_id=917804601]
+layout_mode = 2
+theme_override_styles/separator = SubResource("StyleBoxFlat_sep")
+
+[node name="Body" type="HBoxContainer" parent="Root/VBox" unique_id=1755096518]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 0
+
+[node name="CardArea" type="MarginContainer" parent="Root/VBox/Body" unique_id=1233459203]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
+
+[node name="CardScroll" type="ScrollContainer" parent="Root/VBox/Body/CardArea" unique_id=1960079327]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="CardFlow" type="FlowContainer" parent="Root/VBox/Body/CardArea/CardScroll" unique_id=742018483]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="BanPanelWrap" type="MarginContainer" parent="Root/VBox/Body" unique_id=1667147811]
+custom_minimum_size = Vector2(280, 0)
+layout_mode = 2
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 4
+
+[node name="BanListPanel" type="PanelContainer" parent="Root/VBox/Body/BanPanelWrap" unique_id=904016437]
+layout_mode = 2
+script = ExtResource("2_banpanel")
+
+[node name="Margin" type="MarginContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel" unique_id=1946477216]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="VBox" type="VBoxContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin" unique_id=825029808]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="PanelContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox" unique_id=2029938081]
+layout_mode = 2
+
+[node name="HeaderMargin" type="MarginContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox/Header" unique_id=130939393]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
+
+[node name="HeaderBox" type="HBoxContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox/Header/HeaderMargin" unique_id=1658505109]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox/Header/HeaderMargin/HeaderBox" unique_id=274494778]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "我的 Ban 名单"
+
+[node name="CountLabel" type="Label" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox/Header/HeaderMargin/HeaderBox" unique_id=907289438]
+layout_mode = 2
+text = "0 个"
+vertical_alignment = 1
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox" unique_id=857835681]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="ListBox" type="VBoxContainer" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox/ScrollContainer" unique_id=1014508532]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="EmptyHint" type="Label" parent="Root/VBox/Body/BanPanelWrap/BanListPanel/Margin/VBox" unique_id=1592239027]
+layout_mode = 2
+size_flags_vertical = 3
+text = "还没有 Ban 任何忍者
+点左侧卡片把他加进来"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 3
+
+[node name="StatusBarWrap" type="PanelContainer" parent="Root/VBox" unique_id=432248707]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_header")
+
+[node name="StatusLabel" type="Label" parent="Root/VBox/StatusBarWrap" unique_id=798699069]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.658824, 0.658824, 0.658824, 1)
+theme_override_font_sizes/font_size = 11
+text = "准备中…"
+autowrap_mode = 2

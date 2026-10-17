@@ -1,0 +1,125 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/result_dialog.gd" id="1_script"]
+
+; ============================================================
+;  ResultDialog.tscn —— Ban 选结果弹窗
+; ------------------------------------------------------------
+;  根节点是 AcceptDialog（本质是 Window），内容全部在代码里构建：
+;      ResultDialog (AcceptDialog)
+;        └ Root (MarginContainer)
+;            └ VBox
+;                ├ HeaderBox   : TitleLabel + SubtitleLabel
+;                ├ CtrlBox     : "取前 N 名" + SpinBox + 刷新预览
+;                ├ ScrollContainer
+;                │    └ ResultGrid (GridContainer)  ← 头像 + 名字 + 票数
+;                ├ NotifyLabel
+;                └ FooterBox   : 复制文本 / 导出 JSON / 导出 PNG
+; ============================================================
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dialog"]
+bg_color = Color(0.101961, 0.101961, 0.101961, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.227451, 0.227451, 0.227451, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+
+[node name="ResultDialog" type="AcceptDialog"]
+title = "公共 Ban 选结果"
+size = Vector2i(860, 640)
+visible = false
+min_size = Vector2i(720, 560)
+ok_button_text = "关闭"
+script = ExtResource("1_script")
+theme_override_styles/panel = SubResource("StyleBoxFlat_dialog")
+
+[node name="Root" type="MarginContainer" parent="."]
+offset_right = 860.0
+offset_bottom = 640.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="VBox" type="VBoxContainer" parent="Root"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="HeaderBox" type="VBoxContainer" parent="Root/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="TitleLabel" type="Label" parent="Root/VBox/HeaderBox"]
+layout_mode = 2
+text = "公共 Ban 选"
+theme_override_colors/font_color = Color(0.909804, 0.909804, 0.909804, 1)
+theme_override_font_sizes/font_size = 20
+
+[node name="SubtitleLabel" type="Label" parent="Root/VBox/HeaderBox"]
+layout_mode = 2
+text = ""
+theme_override_colors/font_color = Color(0.603922, 0.603922, 0.603922, 1)
+theme_override_font_sizes/font_size = 11
+
+[node name="CtrlBox" type="HBoxContainer" parent="Root/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SpinHint" type="Label" parent="Root/VBox/CtrlBox"]
+layout_mode = 2
+text = "取前 N 名："
+theme_override_colors/font_color = Color(0.909804, 0.909804, 0.909804, 1)
+theme_override_font_sizes/font_size = 12
+vertical_alignment = 1
+
+[node name="Spin" type="SpinBox" parent="Root/VBox/CtrlBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(112, 0)
+min_value = 1.0
+max_value = 99.0
+value = 5.0
+alignment = 2
+
+[node name="RefreshBtn" type="Button" parent="Root/VBox/CtrlBox"]
+layout_mode = 2
+text = "刷新预览"
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Root/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ResultGrid" type="GridContainer" parent="Root/VBox/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+columns = 5
+
+[node name="NotifyLabel" type="Label" parent="Root/VBox"]
+layout_mode = 2
+text = ""
+theme_override_colors/font_color = Color(1, 0.419608, 0, 1)
+theme_override_font_sizes/font_size = 11
+autowrap_mode = 2
+
+[node name="FooterBox" type="HBoxContainer" parent="Root/VBox"]
+layout_mode = 2
+alignment = 2
+theme_override_constants/separation = 8
+
+[node name="CopyBtn" type="Button" parent="Root/VBox/FooterBox"]
+layout_mode = 2
+text = "复制文本"
+
+[node name="JsonBtn" type="Button" parent="Root/VBox/FooterBox"]
+layout_mode = 2
+text = "导出 JSON"
+
+[node name="PngBtn" type="Button" parent="Root/VBox/FooterBox"]
+layout_mode = 2
+text = "导出 PNG"

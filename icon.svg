@@ -1,0 +1,8 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="22" fill="#1a1a1a"/>
+  <!-- 手里剑 -->
+  <path d="M64 18 L78 50 L110 64 L78 78 L64 110 L50 78 L18 64 L50 50 Z" fill="#FF6B00"/>
+  <path d="M64 34 L73 55 L94 64 L73 73 L64 94 L55 73 L34 64 L55 55 Z" fill="#1a1a1a"/>
+  <circle cx="64" cy="64" r="11" fill="#FF6B00"/>
+  <circle cx="64" cy="64" r="4" fill="#1a1a1a"/>
+</svg>

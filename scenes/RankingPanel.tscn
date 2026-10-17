@@ -1,0 +1,129 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://scripts/ranking_panel.gd" id="1_script"]
+[ext_resource type="Script" path="res://scripts/ranking_row.gd" id="2_row"]
+
+; ============================================================
+;  RankingPanel.tscn —— 实时排名面板
+; ------------------------------------------------------------
+;  结构：
+;      RankingPanel (PanelContainer)           宽 260
+;        └ Margin > VBox
+;            ├ Header (HBoxContainer)
+;            │    ├ TitleLabel   "实时排名"
+;            │    └ CountLabel   "0 项"
+;            ├ Separator
+;            ├ ScrollContainer
+;            │    └ ListBox (VBoxContainer)      ← 排名行在这里动态生成
+;            └ FooterLabel                       "仅显示票数 > 0 的条目"
+;
+;  单行由 ranking_row.gd 负责：名次 | 头像小图 | 名字 | 票数
+; ============================================================
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_root"]
+bg_color = Color(0.129412, 0.129412, 0.129412, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.227451, 0.227451, 0.227451, 1)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_head"]
+bg_color = Color(0.164706, 0.164706, 0.164706, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_scroll"]
+bg_color = Color(0.141176, 0.141176, 0.141176, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sb_grab"]
+bg_color = Color(0.290196, 0.290196, 0.290196, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sb_grab_hl"]
+bg_color = Color(1, 0.419608, 0, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sb_scroll"]
+bg_color = Color(0.141176, 0.141176, 0.141176, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_empty"]
+
+[node name="RankingPanel" type="PanelContainer"]
+custom_minimum_size = Vector2(260, 0)
+offset_right = 260.0
+offset_bottom = 600.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_root")
+script = ExtResource("1_script")
+max_rows = 100
+
+[node name="Margin" type="MarginContainer" parent="."]
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="Margin"]
+theme_override_constants/separation = 6
+
+[node name="Header" type="PanelContainer" parent="Margin/VBox"]
+theme_override_styles/panel = SubResource("StyleBoxFlat_head")
+
+[node name="HeaderMargin" type="MarginContainer" parent="Margin/VBox/Header"]
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
+
+[node name="HeaderBox" type="HBoxContainer" parent="Margin/VBox/Header/HeaderMargin"]
+
+[node name="TitleLabel" type="Label" parent="Margin/VBox/Header/HeaderMargin/HeaderBox"]
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.909804, 0.909804, 0.909804, 1)
+theme_override_font_sizes/font_size = 15
+text = "实时排名"
+
+[node name="CountLabel" type="Label" parent="Margin/VBox/Header/HeaderMargin/HeaderBox"]
+theme_override_colors/font_color = Color(0.603922, 0.603922, 0.603922, 1)
+theme_override_font_sizes/font_size = 11
+text = "0 项"
+vertical_alignment = 1
+
+[node name="Separator" type="HSeparator" parent="Margin/VBox"]
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Margin/VBox"]
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_scroll")
+
+[node name="ListBox" type="VBoxContainer" parent="Margin/VBox/ScrollContainer"]
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="FooterLabel" type="Label" parent="Margin/VBox"]
+theme_override_colors/font_color = Color(0.541176, 0.541176, 0.541176, 1)
+theme_override_font_sizes/font_size = 10
+text = "仅显示票数 > 0 的条目"
+horizontal_alignment = 1
+
+[editable path="Margin/VBox/ScrollContainer"]
