@@ -16,6 +16,7 @@ extends Control
 
 const UITheme := preload("res://scripts/ui_theme.gd")
 const VoteImporter := preload("res://scripts/vote_importer.gd")
+const UIFilePicker := preload("res://scripts/ui_file_picker.gd")
 
 const PLAYER_SCENE := "res://scenes/Main.tscn"
 const EXPORT_DIR := "user://exports"
@@ -24,6 +25,8 @@ const TABLE_MAX_ROWS := 120         # 明细表最多多少行
 const CELL_W := 150
 const CELL_H := 190
 const RESULT_PNG_WIDTH := 1024
+## 做过手动调整时，界面和导出里都要出现的警告语
+const _MANUAL_WARNING := "组织者对统计结果做了更改，请其他用户验证是否公平公正"
 
 @onready var _player_btn: Button = $Root/VBox/HeaderBox/HeaderRow/PlayerModeBtn
 @onready var _toolbar: HBoxContainer = $Root/VBox/ToolbarWrap/ToolbarScroll/Toolbar
@@ -34,6 +37,11 @@ const RESULT_PNG_WIDTH := 1024
 @onready var _top_grid: GridContainer = $Root/VBox/Body/BodyBox/BodyMargin/TopGrid
 @onready var _status_label: Label = $Root/VBox/StatusBarWrap/StatusLabel
 
+var _manual: Dictionary = {}        # 照片ID -> 累计手动增减（可为负）
+var _stats_raw: Dictionary = {}     # 导入得到的原始统计（不被手动调整污染）
+var _manual_warn: Label             # 顶部红色警告条
+var _manual_clear_btn: Button       # 「清除手动调整」
+
 var _file_dialog: FileDialog
 var _dir_dialog: FileDialog
 var _import_btn: Button
@@ -43,6 +51,7 @@ var _json_btn: Button
 var _png_btn: Button
 var _txt_btn: Button
 var _top_spin: SpinBox
+var _limit_spin: SpinBox
 var _refresh_btn: Button
 var _loaded_label: Label
 
@@ -54,12 +63,15 @@ var _exporting := false
 
 func _ready() -> void:
 	_build_toolbar()
+	_build_manual_warn()
 	_build_file_dialogs()
 
 	_player_btn.pressed.connect(_on_back_to_player)
 	UITheme.apply_button(_player_btn)
 	get_window().files_dropped.connect(_on_files_dropped)
 	get_window().title = "Naruto Ban Picker - 组织者模式"
+	# 窗口变宽变窄时，重算一行放几个格子
+	get_window().size_changed.connect(_render_top_grid)
 
 	# 组织者端也要头像，用来在排名里显示
 	_status_label.text = "正在扫描头像目录…"
@@ -68,6 +80,27 @@ func _ready() -> void:
 	ImageLoader.scan_finished.connect(_on_scan_finished)
 
 	_render()
+
+
+## 顶部那条红色警告条（只有做过手动调整时才显示）
+func _build_manual_warn() -> void:
+	var vb: VBoxContainer = $Root/VBox/SummaryWrap/SummaryBox/SummaryVBox
+	_manual_warn = Label.new()
+	_manual_warn.name = "ManualWarn"
+	_manual_warn.visible = false
+	_manual_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_manual_warn.add_theme_font_size_override("font_size", 14)
+	_manual_warn.add_theme_color_override("font_color", Color("ffb3b3"))
+	var sb: StyleBoxFlat = UITheme.make_style(
+		Color(0.42, 0.06, 0.06, 0.92), UITheme.RADIUS_SM,
+		Color(0, 0, 0, 0.35), Color("ff3b3b"), 2, 8)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	_manual_warn.add_theme_stylebox_override("normal", sb)
+	vb.add_child(_manual_warn)
+	vb.move_child(_manual_warn, 0)
 
 
 # ============================================================
@@ -118,6 +151,8 @@ func _build_toolbar() -> void:
 	_top_spin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_top_spin.tooltip_text = "网格里显示前多少名（明细里始终是全部）"
 	UITheme.apply_input(_top_spin)
+	# 改了立刻重画，不用再点「刷新视图」
+	_top_spin.value_changed.connect(func(_v: float) -> void: _render_top_grid())
 	_toolbar.add_child(_top_spin)
 
 	var top_hint2 := Label.new()
@@ -133,6 +168,37 @@ func _build_toolbar() -> void:
 	_refresh_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_refresh_btn.pressed.connect(_render)
 	_toolbar.add_child(_refresh_btn)
+
+	# 只有在做过手动调整时才显示
+	_manual_clear_btn = Button.new()
+	_manual_clear_btn.name = "ClearManualBtn"
+	_manual_clear_btn.text = "撤销手动调整"
+	_manual_clear_btn.tooltip_text = "把手动增减全部清掉，回到原始统计"
+	_manual_clear_btn.visible = false
+	UITheme.apply_button(_manual_clear_btn)
+	_manual_clear_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_manual_clear_btn.pressed.connect(_on_clear_manual)
+	_toolbar.add_child(_manual_clear_btn)
+
+	# ---- 每人上限检查 ----
+	var lim_hint := Label.new()
+	lim_hint.text = "每人上限"
+	UITheme.style_label(lim_hint, 11, UITheme.TEXT_MUTED)
+	lim_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_toolbar.add_child(lim_hint)
+
+	_limit_spin = SpinBox.new()
+	_limit_spin.name = "LimitSpin"
+	_limit_spin.min_value = 0
+	_limit_spin.max_value = 99
+	_limit_spin.step = 1
+	_limit_spin.value = 0
+	_limit_spin.custom_minimum_size = Vector2(80, 32)
+	_limit_spin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_limit_spin.tooltip_text = "填 0 = 不检查；填 5 = 检查谁 Ban 超过 5 个"
+	UITheme.apply_input(_limit_spin)
+	_limit_spin.value_changed.connect(func(_v: float) -> void: _render_summary())
+	_toolbar.add_child(_limit_spin)
 
 	_toolbar.add_child(VSeparator.new())
 
@@ -173,17 +239,19 @@ func _build_toolbar() -> void:
 func _build_file_dialogs() -> void:
 	_file_dialog = FileDialog.new()
 	_file_dialog.name = "FilePicker"
-	_file_dialog.title = "选择群友发来的投票 json（可多选）"
+	_file_dialog.title = "选择投票文件（json 或 txt，可多选）"
 	_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
 	_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	_file_dialog.use_native_dialog = true
-	_file_dialog.add_filter("*.json", "投票 json")
+	_file_dialog.add_filter("*.json, *.txt", "投票文件（json / txt）")
+	_file_dialog.add_filter("*.json", "只有 json")
+	_file_dialog.add_filter("*.txt", "只有 txt")
 	_file_dialog.files_selected.connect(_on_files_selected)
 	add_child(_file_dialog)
 
 	_dir_dialog = FileDialog.new()
 	_dir_dialog.name = "DirPicker"
-	_dir_dialog.title = "选择装着投票 json 的文件夹"
+	_dir_dialog.title = "选择装着投票文件的文件夹"
 	_dir_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 	_dir_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	_dir_dialog.use_native_dialog = true
@@ -212,13 +280,13 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		# 目录也能拖进来
 		if DirAccess.dir_exists_absolute(s):
 			list.append(s)
-		elif s.get_extension().to_lower() == "json":
+		elif s.get_extension().to_lower() in ["json", "txt"]:
 			list.append(s)
 		else:
-			_status_label.text = "已忽略非 json 文件：%s" % s.get_file()
+			_status_label.text = "已忽略非 json / txt 文件：%s" % s.get_file()
 	if list.is_empty():
 		if files.size() > 0:
-			_status_label.text = "拖进来的东西里没有 json 文件。"
+			_status_label.text = "拖进来的东西里没有 json 或 txt 文件。"
 		return
 	_do_import(list)
 
@@ -243,19 +311,122 @@ func _do_import(paths: Array) -> void:
 	# 把之前导入的结果一起算进去：直接把累计文件列表重新统计一次最稳妥
 	if _loaded_files.size() > fresh.size():
 		st = VoteImporter.import_paths(_loaded_files)
-	_stats = st
+	_stats_raw = st
+	# 重新导入 = 回到原始数据，手动调整清空（避免调整错位到新数据上）
+	_manual.clear()
+	_rebuild_stats()
 	_render()
 	var errs: Array = st.get("errors", [])
 	var dups: Array = st.get("duplicates", [])
-	_status_label.text = "导入完成：本次 %d 项，累计 %d 个文件，有效 %d 人；坏文件 %d，重复投票 %d。" % [
+	var warns: Array = st.get("warnings", [])
+	_status_label.text = "导入完成：本次 %d 项，累计 %d 个文件，有效 %d 人；坏文件 %d，重复投票 %d，提醒 %d。" % [
 		fresh.size(), _loaded_files.size(), int(st.get("voter_count", 0)),
-		errs.size(), dups.size()]
+		errs.size(), dups.size(), warns.size()]
+
+
+# ============================================================
+#  手动增减票数（防呆：有人少投了一张，不必让他重开程序）
+# ------------------------------------------------------------
+#  设计原则：
+#    · 只改「内存里的展示结果」，**不动导入的原始投票文件**
+#    · 重新导入 / 清空 / 关程序 → 手动调整全部消失（所以叫"临时"）
+#    · 一旦有任何调整，界面顶部就挂一条红色警告，且导出的
+#      json / txt / png 里也都会写明，保证别人能复核
+# ============================================================
+
+## 加一票
+func _bump(photo: String, delta: int) -> void:
+	if photo == "":
+		return
+	var cur := int(_manual.get(photo, 0)) + delta
+	if cur == 0:
+		_manual.erase(photo)
+	else:
+		_manual[photo] = cur
+	_rebuild_stats()
+	_render()
+	_refresh_manual_warn()
+
+
+## 把原始统计 + 手动增减合成为「用于展示和导出」的统计
+func _rebuild_stats() -> void:
+	if _stats_raw.is_empty():
+		_stats = {}
+		return
+	if _manual.is_empty():
+		_stats = _stats_raw
+		return
+
+	var st: Dictionary = _stats_raw.duplicate(true)
+	var ranking: Array = []
+	for r in (_stats_raw.get("ranking", []) as Array):
+		var d: Dictionary = (r as Dictionary).duplicate(true)
+		var photo := String(d.get("file", ""))
+		var raw := int(d.get("count", 0))
+		var delta := int(_manual.get(photo, 0))
+		if delta == 0:
+			ranking.append(d)
+			continue
+		var adj := raw + delta
+		if adj <= 0:
+			continue          # 被减到 0 的就从排名里拿掉
+		d["raw_count"] = raw
+		d["manual_delta"] = delta
+		d["count"] = adj
+		ranking.append(d)
+	# 调整后名次会变，必须重排
+	VoteImporter.sort_ranking(ranking)
+
+	var total := 0
+	for r in ranking:
+		total += int((r as Dictionary).get("count", 0))
+	st["ranking"] = ranking
+	st["total_bans"] = ranking.size()
+	st["manual_adjusted"] = true
+	_stats = st
+
+
+## 有没有做过手动调整
+func has_manual_adjustment() -> bool:
+	return not _manual.is_empty()
+
+
+## 全部撤销
+func _on_clear_manual() -> void:
+	if _manual.is_empty():
+		return
+	_manual.clear()
+	_rebuild_stats()
+	_render()
+	_refresh_manual_warn()
+	_status_label.text = "已撤销全部手动调整，回到原始统计。"
+
+
+## 刷新顶部那条红色警告
+func _refresh_manual_warn() -> void:
+	if _manual_warn == null or not is_instance_valid(_manual_warn):
+		return
+	var on := has_manual_adjustment()
+	_manual_warn.visible = on
+	if on:
+		var n := _manual.size()
+		var total := 0
+		for k in _manual.keys():
+			total += int(_manual[k])
+		_manual_warn.text = ("⚠ 组织者对统计结果做了手动调整（%d 处，净 %+d 票），"
+			+ "本结果已不是原始投票数据，请其他用户验证是否公平公正") % [n, total]
+	if _manual_clear_btn != null and is_instance_valid(_manual_clear_btn):
+		_manual_clear_btn.visible = on
+
 
 
 func _on_clear_pressed() -> void:
 	_loaded_files.clear()
 	_stats = {}
+	_stats_raw = {}
+	_manual.clear()
 	_render()
+	_refresh_manual_warn()
 	_status_label.text = "已清空导入记录。"
 
 
@@ -287,7 +458,7 @@ func _update_loaded_label() -> void:
 
 func _render_summary() -> void:
 	if _stats.is_empty():
-		_summary_label.text = "还没有导入任何投票文件。\n把群友发来的 vote_*.json 拖进这个窗口，或点上面的「导入文件 / 导入文件夹」。"
+		_summary_label.text = "还没有导入任何投票文件。\n把群友发来的 vote_*.json **或者攒好的 txt 文字** 拖进这个窗口，或点上面的「导入文件 / 导入文件夹」。"
 		_detail_label.text = ""
 		return
 
@@ -295,6 +466,7 @@ func _render_summary() -> void:
 	var ranking: Array = _stats.get("ranking", [])
 	var errs: Array = _stats.get("errors", [])
 	var dups: Array = _stats.get("duplicates", [])
+	var warns: Array = _stats.get("warnings", [])
 	var parts: Array[String] = []
 	parts.append("参与 %d 人" % vc)
 	parts.append("被 Ban 过的忍者 %d 个" % ranking.size())
@@ -307,6 +479,18 @@ func _render_summary() -> void:
 		parts.append("⚠ 重复投票 %d 位" % dups.size())
 	if not errs.is_empty():
 		parts.append("⚠ 坏文件 %d 个" % errs.size())
+	if not warns.is_empty():
+		parts.append("⚠ 提醒 %d 条" % warns.size())
+	# 上限检查
+	var limit := 0
+	if _limit_spin != null:
+		limit = int(_limit_spin.value)
+	var over: Array = VoteImporter.find_limit_violations(_stats, limit)
+	if limit > 0:
+		if over.is_empty():
+			parts.append("✅ 都在上限 %d 个以内" % limit)
+		else:
+			parts.append("❌ 超上限 %d 人" % over.size())
 	_summary_label.text = "  |  ".join(parts)
 
 	# 明细：每人 Ban 了几个
@@ -315,9 +499,24 @@ func _render_summary() -> void:
 	var names: Array[String] = []
 	for v in voters:
 		var d: Dictionary = v
-		names.append("%s(%d)" % [String(d.get("voter_name", "?")), int(d.get("count", 0))])
+		var tag := ""
+		if String(d.get("source_kind", "json")) == "text":
+			tag = "·文字"
+		names.append("%s(%d)%s" % [String(d.get("voter_name", "?")), int(d.get("count", 0)), tag])
 	if not names.is_empty():
 		lines.append("每人 Ban 数：" + "、".join(names))
+
+	# 超上限的人单独列出来，方便人工核对
+	if limit > 0 and not over.is_empty():
+		lines.append("")
+		lines.append("【超过每人上限 %d 个的】" % limit)
+		for o in over:
+			var od: Dictionary = o
+			lines.append("  ❌ %s 投了 %d 个（上限 %d）" % [
+				String(od.get("voter_name", "?")),
+				int(od.get("count", 0)),
+				limit])
+
 	for d in dups:
 		var dd: Dictionary = d
 		lines.append("重复投票：%s 交了多份，已用最新一份（%s），丢弃（%s）" % [
@@ -328,6 +527,9 @@ func _render_summary() -> void:
 		var ee: Dictionary = e
 		lines.append("已跳过：%s（%s）" % [
 			String(ee.get("file", "")).get_file(), String(ee.get("reason", ""))])
+	for w in warns:
+		var ww: Dictionary = w
+		lines.append("提醒：%s" % String(ww.get("reason", "")))
 	_detail_label.text = "\n".join(lines)
 
 
@@ -351,10 +553,24 @@ func _render_top_grid() -> void:
 
 	var ranking: Array = _stats.get("ranking", [])
 	var n: int = mini(_top_n(), TOP_GRID_LIMIT)
-	var cols: int = clampi(n, 1, 5)
+	var cols: int = clampi(_fit_columns(), 1, maxi(1, n))
 	_top_grid.columns = cols
 	for i in range(n):
 		_top_grid.add_child(_make_cell(i + 1, ranking[i] as Dictionary))
+
+
+## 按当前可用宽度算一行能放几个格子。
+## 写死 5 列时，窗口一窄第 5 个就会被挤出屏幕外。
+func _fit_columns() -> int:
+	var avail := 0.0
+	var body := get_node_or_null("Root/VBox/Body")
+	if body != null and (body as Control).size.x > 0.0:
+		avail = (body as Control).size.x - 24.0    # 扣掉左右 margin
+	if avail <= 0.0:
+		return 5
+	var gap := 10.0
+	var c := int(floor((avail + gap) / (float(CELL_W) + gap)))
+	return clampi(c, 1, 5)
 
 
 func _make_cell(rank: int, rec: Dictionary) -> Control:
@@ -366,9 +582,11 @@ func _make_cell(rank: int, rec: Dictionary) -> Control:
 	var card := PanelContainer.new()
 	card.name = "Cell_%s" % photo
 	card.custom_minimum_size = Vector2(CELL_W, CELL_H)
+	# 网格里显示的每一张（Top N）都统一用橙红描边；
+	# 之前只给前 3 名上色是早期遗留，和「可以自定义显示前 N 名」冲突，已统一
 	card.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.CARD_BG, UITheme.RADIUS_MD, Color(0, 0, 0, 0.4),
-			UITheme.ACCENT if rank <= 3 else UITheme.BORDER, 2 if rank <= 3 else 1, 4))
+			UITheme.ACCENT, 2, 4))
 
 	var margin := MarginContainer.new()
 	for side in ["left", "right"]:
@@ -384,7 +602,7 @@ func _make_cell(rank: int, rec: Dictionary) -> Control:
 	var rank_lbl := Label.new()
 	rank_lbl.text = "第 %d 名" % rank
 	rank_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UITheme.style_label(rank_lbl, 11, UITheme.ACCENT if rank <= 3 else UITheme.TEXT_MUTED)
+	UITheme.style_label(rank_lbl, 11, UITheme.ACCENT)
 	vbox.add_child(rank_lbl)
 
 	var frame := PanelContainer.new()
@@ -505,10 +723,38 @@ func _render_table() -> void:
 		hb.add_child(name_lbl)
 
 		var cnt_lbl := Label.new()
-		cnt_lbl.text = "%d 票" % int(rec.get("count", 0))
-		cnt_lbl.custom_minimum_size = Vector2(60, 0)
+		var delta := int(rec.get("manual_delta", 0))
+		var raw_cnt := int(rec.get("raw_count", rec.get("count", 0)))
+		var now_cnt := int(rec.get("count", 0))
+		if delta != 0:
+			cnt_lbl.text = "%d 票（原 %d，%+d）" % [now_cnt, raw_cnt, delta]
+			cnt_lbl.add_theme_color_override("font_color", Color("ff6b6b"))
+		else:
+			cnt_lbl.text = "%d 票" % now_cnt
+		cnt_lbl.custom_minimum_size = Vector2(140, 0)
 		UITheme.style_label(cnt_lbl, 12, UITheme.ACCENT)
 		hb.add_child(cnt_lbl)
+
+		# ---- 手动增减（防呆：有人少投了一张） ----
+		var minus := Button.new()
+		minus.name = "Minus"
+		minus.text = "−"
+		minus.tooltip_text = "手动减 1 票（临时，只影响本次展示和导出，不改原始投票文件）"
+		minus.custom_minimum_size = Vector2(26, 22)
+		minus.focus_mode = Control.FOCUS_NONE
+		UITheme.apply_button(minus)
+		minus.pressed.connect(func() -> void: _bump(photo, -1))
+		hb.add_child(minus)
+
+		var plus := Button.new()
+		plus.name = "Plus"
+		plus.text = "＋"
+		plus.tooltip_text = "手动加 1 票（用于补上漏投的那一票，临时，只影响本次展示和导出）"
+		plus.custom_minimum_size = Vector2(26, 22)
+		plus.focus_mode = Control.FOCUS_NONE
+		UITheme.apply_button(plus)
+		plus.pressed.connect(func() -> void: _bump(photo, 1))
+		hb.add_child(plus)
 
 		var voters_lbl := Label.new()
 		voters_lbl.text = "、".join(voters) if not voters.is_empty() else "—"
@@ -528,32 +774,69 @@ func _update_button_state() -> void:
 
 # ============================================================
 #  导出
+# ------------------------------------------------------------
+#  三个导出按钮都先让用户**选一个文件夹**，再写到那里。
+#  不再默认塞到 AppData 里（那个位置用户根本找不到）。
 # ============================================================
-func _export_paths() -> Dictionary:
-	DirAccess.make_dir_recursive_absolute(EXPORT_DIR)
-	var ts := Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
-	return {
-		"json": EXPORT_DIR.path_join("final_result.json"),
-		"png": EXPORT_DIR.path_join("final_result.png"),
-		"txt": EXPORT_DIR.path_join("final_result.txt"),
-		"stamped_json": EXPORT_DIR.path_join("final_result_%s.json" % ts),
-		"stamped_png": EXPORT_DIR.path_join("final_result_%s.png" % ts),
-		"stamped_txt": EXPORT_DIR.path_join("final_result_%s.txt" % ts),
-	}
+
+## 统一入口：先选目录，再调对应的 _export_*_to()
+func _ask_dir_then(title: String, handler: Callable) -> void:
+	if _stats.is_empty():
+		return
+	UIFilePicker.pick_folder(self, title, DataManager.effective_export_dir(), handler)
 
 
 func _on_export_json() -> void:
-	if _stats.is_empty():
-		return
-	var paths := _export_paths()
+	_ask_dir_then("选择「汇总 JSON」保存到哪个文件夹",
+		func(dir: String) -> void: _export_json_to(dir))
+
+
+func _export_json_to(dir: String) -> void:
+	DataManager.set_export_dir(dir)      # 记住，下次选择器从这里开始
+	var path := dir.path_join("final_result.json")
 	var payload: Dictionary = VoteImporter.build_final_result(_stats, _name_resolver())
-	var ok := _write_json(String(paths["json"]), payload)
-	# 再存一份带时间戳的，便于留档对比
-	_write_json(String(paths["stamped_json"]), payload)
-	if ok:
-		_status_label.text = "已导出汇总 JSON：%s" % ProjectSettings.globalize_path(String(paths["json"]))
+	if has_manual_adjustment():
+		payload["manual_adjustment"] = _manual_payload()
+	if _write_json(path, payload):
+		_status_label.text = "已导出汇总 JSON：%s" % path
 	else:
-		_status_label.text = "导出汇总 JSON 失败。"
+		_status_label.text = "导出汇总 JSON 失败（目录可能不可写）：%s" % path
+
+
+## 手动调整的明细（写进 json / txt，供别人复核）
+func _manual_payload() -> Dictionary:
+	var items: Array = []
+	for photo in _manual.keys():
+		var delta := int(_manual[photo])
+		if delta == 0:
+			continue
+		items.append({
+			"photo": String(photo),
+			"name": ImageLoader.get_display_name(String(photo)),
+			"delta": delta,
+		})
+	items.sort_custom(func(a, b) -> bool: return String(a["name"]) < String(b["name"]))
+	return {
+		"adjusted": true,
+		"item_count": items.size(),
+		"items": items,
+		"warning": _MANUAL_WARNING,
+	}
+
+
+## 给人看的多行文字版
+func _manual_report_lines() -> Array[String]:
+	var out: Array[String] = []
+	if not has_manual_adjustment():
+		return out
+	out.append("⚠ " + _MANUAL_WARNING)
+	out.append("（以下是本次手动增减明细，原始投票文件中并没有这些改动）")
+	for photo in _manual.keys():
+		var delta := int(_manual[photo])
+		if delta == 0:
+			continue
+		out.append("  · %s  票数 %+d" % [ImageLoader.get_display_name(String(photo)), delta])
+	return out
 
 
 func _write_json(path: String, payload: Dictionary) -> bool:
@@ -567,38 +850,53 @@ func _write_json(path: String, payload: Dictionary) -> bool:
 
 
 func _on_export_txt() -> void:
-	if _stats.is_empty():
-		return
-	var paths := _export_paths()
+	_ask_dir_then("选择「汇总 TXT」保存到哪个文件夹",
+		func(dir: String) -> void: _export_txt_to(dir))
+
+
+func _export_txt_to(dir: String) -> void:
+	DataManager.set_export_dir(dir)
+	var path := dir.path_join("final_result.txt")
 	var text: String = VoteImporter.build_text_result(_stats, _top_n(), _name_resolver())
-	var f := FileAccess.open(String(paths["txt"]), FileAccess.WRITE)
+	if has_manual_adjustment():
+		var lines := _manual_report_lines()
+		text = "\n".join(lines) + "\n\n" + text + "\n\n" + "\n".join(lines)
+	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		_status_label.text = "导出汇总 TXT 失败。"
+		_status_label.text = "导出汇总 TXT 失败（目录可能不可写）：%s" % path
 		return
 	f.store_string(text)
 	f.close()
-	var f2 := FileAccess.open(String(paths["stamped_txt"]), FileAccess.WRITE)
-	if f2 != null:
-		f2.store_string(text)
-		f2.close()
-	_status_label.text = "已导出汇总 TXT：%s" % ProjectSettings.globalize_path(String(paths["txt"]))
+	_status_label.text = "已导出汇总 TXT：%s" % path
 
 
 func _on_export_png() -> void:
+	if _exporting:
+		return
+	_ask_dir_then("选择「汇总 PNG」保存到哪个文件夹",
+		func(dir: String) -> void: _on_png_dir_picked(dir))
+
+
+## PNG 渲染是异步的，所以单独抽一个可直接 await 的方法
+func _on_png_dir_picked(dir: String) -> void:
+	await _export_png_to(dir)
+
+
+func _export_png_to(dir: String) -> void:
 	if _stats.is_empty() or _exporting:
 		return
+	DataManager.set_export_dir(dir)
 	_exporting = true
 	_png_btn.disabled = true
 	_status_label.text = "正在渲染汇总 PNG…"
-	var paths := _export_paths()
-	var ok: bool = await _render_png(String(paths["png"]))
-	await _render_png(String(paths["stamped_png"]))
+	var path := dir.path_join("final_result.png")
+	var ok: bool = await _render_png(path)
 	_exporting = false
 	_png_btn.disabled = false
 	if ok:
-		_status_label.text = "已导出汇总 PNG：%s" % ProjectSettings.globalize_path(String(paths["png"]))
+		_status_label.text = "已导出汇总 PNG：%s" % path
 	else:
-		_status_label.text = "导出汇总 PNG 失败（可能一张头像都没有？）"
+		_status_label.text = "导出汇总 PNG 失败（可能一张头像都没有，或在 headless 环境）"
 
 
 ## 用 SubViewport 离屏渲染 Top N 网格
@@ -621,7 +919,9 @@ func _render_png(path: String) -> bool:
 	var grid_w: int = cols * CELL_W + (cols - 1) * gap
 	var grid_h: int = rows * CELL_H + (rows - 1) * gap
 	var out_w := maxi(RESULT_PNG_WIDTH, grid_w + pad * 2)
-	var out_h: int = grid_h + pad * 2 + 44      # 顶部留一条标题
+	# 做过手动调整时，顶部多留一条红色警告的高度
+	var warn_h: int = 34 if has_manual_adjustment() else 0
+	var out_h: int = grid_h + pad * 2 + 44 + warn_h
 
 	var sv := SubViewport.new()
 	sv.name = "ExportViewport"
@@ -646,8 +946,24 @@ func _render_png(path: String) -> bool:
 	UITheme.style_label(title, 14, UITheme.ACCENT)
 	sv.add_child(title)
 
+	# 手动调整过 → 图片上也必须写明，不能只靠界面提醒
+	if warn_h > 0:
+		var warn := Label.new()
+		warn.text = "⚠ 组织者对统计结果做了手动调整，请其他用户验证是否公平公正"
+		warn.position = Vector2(pad, 36)
+		warn.size = Vector2(out_w - pad * 2, 24)
+		warn.add_theme_font_size_override("font_size", 13)
+		warn.add_theme_color_override("font_color", Color("ffb3b3"))
+		var wsb: StyleBoxFlat = UITheme.make_style(
+			Color(0.42, 0.06, 0.06, 0.95), UITheme.RADIUS_SM,
+			Color(0, 0, 0, 0.35), Color("ff3b3b"), 2, 6)
+		wsb.content_margin_left = 10
+		wsb.content_margin_top = 3
+		warn.add_theme_stylebox_override("normal", wsb)
+		sv.add_child(warn)
+
 	var holder := Control.new()
-	holder.position = Vector2(pad, 40)
+	holder.position = Vector2(pad, 40 + warn_h)
 	holder.size = Vector2(grid_w, grid_h)
 	sv.add_child(holder)
 

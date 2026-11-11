@@ -115,11 +115,16 @@ func detect_avatar_dir() -> String:
 ## 扫描头像目录。返回 [{name, photo, path, group, mtime}]。
 ## name 是可显示的忍者名（characters.json 里有就用它，否则等于 photo）。
 func scan_directory() -> Array[Dictionary]:
+	# 【必须一起重置计数器】否则每次重新扫描（玩家 ↔ 组织者来回切换）
+	# _finished / _requested 会一直累加，出现「已加载 972 / 共 486 张」这种鬼数字
+	cancel_pending()
 	photos.clear()
 	groups.clear()
 	_meta.clear()
 	_invalidated.clear()
 	_index.clear()
+	_requested = 0
+	_finished = 0
 
 	avatar_dir = detect_avatar_dir()
 	if avatar_dir == "":

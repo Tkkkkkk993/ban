@@ -223,7 +223,7 @@ func _make_cell(rank: int, item: Array) -> Control:
 	card.custom_minimum_size = Vector2(CELL_W, CELL_H)
 	card.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.CARD_BG, UITheme.RADIUS_MD, Color(0, 0, 0, 0.4),
-			UITheme.ACCENT if rank <= 3 else UITheme.BORDER, 2 if rank <= 3 else 1, 4))
+			UITheme.ACCENT, 2, 4))
 
 	var margin := MarginContainer.new()
 	for side in ["left", "right"]:
@@ -240,7 +240,7 @@ func _make_cell(rank: int, item: Array) -> Control:
 	var rank_lbl := Label.new()
 	rank_lbl.text = "第 %d 名" % rank
 	rank_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UITheme.style_label(rank_lbl, 11, UITheme.ACCENT if rank <= 3 else UITheme.TEXT_MUTED)
+	UITheme.style_label(rank_lbl, 11, UITheme.ACCENT)
 	vbox.add_child(rank_lbl)
 
 	# 头像

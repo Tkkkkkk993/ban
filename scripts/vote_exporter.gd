@@ -29,6 +29,9 @@
 class_name VoteExporterNS
 extends RefCounted
 
+# 文本格式的生成交给 vote_text.gd，这里只负责「导出成文件」
+const VoteText := preload("res://scripts/vote_text.gd")
+
 ## 输出目录（自动创建）
 const EXPORT_DIR := "user://exports"
 ## 格式标识，导入端靠它校验
@@ -141,18 +144,26 @@ static func save_vote_file(voter_name: String, voter_id: String, bans: Array,
 	}
 
 
-## 导出成纯文本（方便直接粘到群里）
+## 导出成纯文本（方便直接粘到群里，也能被组织者端批量识别）
+## 格式见 vote_text.gd 顶部注释。每行带 <照片ID>，所以显示名重名也不会统计错。
 static func build_vote_text(voter_name: String, bans: Array) -> String:
-	var lines: Array[String] = []
-	lines.append("%s 的 Ban 名单（共 %d 个）：" % [voter_name, bans.size()])
-	if bans.is_empty():
-		lines.append("（空）")
-	else:
-		for i in range(bans.size()):
-			lines.append("%d. %s" % [i + 1, String(bans[i])])
-	lines.append("")
-	lines.append("导出时间：%s" % now_timestamp())
-	return "\n".join(lines)
+	var entries: Array = []
+	for p in bans:
+		var photo := String(p)
+		entries.append([photo, _display_name_of(photo)])
+	return VoteText.build_block(voter_name, entries)
+
+
+## 查显示名（本类是静态工具，通过 Autoload 拿 ImageLoader；拿不到就用照片ID）
+static func _display_name_of(photo: String) -> String:
+	var t := Engine.get_main_loop()
+	if t is SceneTree:
+		var il = (t as SceneTree).root.get_node_or_null("ImageLoader")
+		if il != null:
+			var n := String(il.get_display_name(photo))
+			if n != "":
+				return n
+	return photo
 
 
 ## 导出投票文本文件，返回 { ok, path, error }

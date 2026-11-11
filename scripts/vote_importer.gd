@@ -28,6 +28,11 @@ const MAX_FILES_PER_DIR := 2000
 #  入口
 # ============================================================
 
+const VoteText := preload("res://scripts/vote_text.gd")
+
+## 支持的扩展名：json（一份投票一个文件）+ txt（一份投票一段文字，可以多段）
+const SUPPORTED_EXT := ["json", "txt"]
+
 ## 导入一批路径（文件或文件夹都可以混着传）。
 ## 返回统计结果字典，字段见类注释。
 static func import_paths(paths: Array) -> Dictionary:
@@ -35,7 +40,7 @@ static func import_paths(paths: Array) -> Dictionary:
 	return import_files(files)
 
 
-## 从路径列表里展开出所有 .json 文件（文件夹会递归一层，不递归子目录）
+## 从路径列表里展开出所有 .json / .txt 文件（文件夹只扫一层）
 static func collect_vote_files(paths: Array) -> Array:
 	var out: Array = []
 	var seen := {}
@@ -51,7 +56,8 @@ static func collect_vote_files(paths: Array) -> Array:
 			listed.sort()
 			var n := 0
 			for f in listed:
-				if f.get_extension().to_lower() != "json":
+				var fext := f.get_extension().to_lower()
+				if not SUPPORTED_EXT.has(fext):
 					continue
 				var full := path.path_join(f)
 				if not seen.has(full):
@@ -76,32 +82,34 @@ static func import_files(files: Array) -> Dictionary:
 	var by_voter := {}
 
 	for path in files:
-		var r := load_vote_file(String(path))
-		if not r["ok"]:
-			(st["errors"] as Array).append({"file": String(path), "reason": String(r["error"])})
-			continue
+		# 一个 .json = 一条投票；一个 .txt 里可能有**多条**投票（群友的文字攒在一起）
+		var recs: Array = _expand_one_file(String(path), st)
+		for r in recs:
+			var rec: Dictionary = r
+			var vid := String(rec["voter_id"])
+			if by_voter.has(vid):
+				# 同一个 voter_id 又来一份 → 比谁更新
+				var old: Dictionary = by_voter[vid]
+				var old_key := _freshness_key(old)
+				var new_key := _freshness_key(rec)
+				var keep_new := new_key > old_key
+				var loser: Dictionary = old if keep_new else rec
+				var winner: Dictionary = rec if keep_new else old
+				(st["duplicates"] as Array).append({
+					"voter_id": vid,
+					"voter_name": String(winner["voter_name"]),
+					"kept_file": String(winner["path"]),
+					"dropped_file": String(loser["path"]),
+					"kept_timestamp": String(winner["timestamp_effective"]),
+					"dropped_timestamp": String(loser["timestamp_effective"]),
+				})
+				if keep_new:
+					by_voter[vid] = rec
+			else:
+				by_voter[vid] = rec
 
-		var vid := String(r["voter_id"])
-		if by_voter.has(vid):
-			# 同一个 voter_id 又来一份 → 比谁更新
-			var old: Dictionary = by_voter[vid]
-			var old_key := _freshness_key(old)
-			var new_key := _freshness_key(r)
-			var keep_new := new_key > old_key
-			var loser: Dictionary = old if keep_new else r
-			var winner: Dictionary = r if keep_new else old
-			(st["duplicates"] as Array).append({
-				"voter_id": vid,
-				"voter_name": String(winner["voter_name"]),
-				"kept_file": String(winner["path"]),
-				"dropped_file": String(loser["path"]),
-				"kept_timestamp": String(winner["timestamp_effective"]),
-				"dropped_timestamp": String(loser["timestamp_effective"]),
-			})
-			if keep_new:
-				by_voter[vid] = r
-		else:
-			by_voter[vid] = r
+	# 同一个人既交了 json 又交了文字 → 会按两个 id 重复计票，这里给出提醒
+	_check_cross_format_dup(by_voter, st)
 
 	# ---- 汇总 ----
 	var counts := {}                 # photo -> 票数
@@ -129,6 +137,9 @@ static func import_files(files: Array) -> Dictionary:
 			"bans": uniq.duplicate(),
 			"file": String(rec["path"]),
 			"timestamp": String(rec["timestamp_effective"]),
+			# 文字投票才有：文字里自己声明的数量，用于核对「有没有超出上限」
+			"declared_count": int(rec.get("declared_count", uniq.size())),
+			"source_kind": String(rec.get("source_kind", "json")),
 		})
 		all_voter_names.append(String(rec["voter_name"]))
 		for p in uniq:
@@ -157,6 +168,97 @@ static func import_files(files: Array) -> Dictionary:
 	st["banned_set"] = banned_any
 	st["voter_names_of"] = voters_of
 	return st
+
+
+## 把一个文件展开成若干条投票记录。
+##   .json → 0 或 1 条
+##   .txt  → 0 到多条（一个 txt 里可以攒很多段文字）
+## 解析问题会写进 st["errors"] / st["warnings"]，不中断整体流程。
+static func _expand_one_file(path: String, st: Dictionary) -> Array:
+	var ext := path.get_extension().to_lower()
+	if ext == "txt":
+		return _records_from_text_file(path, st)
+
+	# 其它一律当 json 处理
+	var r: Dictionary = load_vote_file(path)
+	if not bool(r["ok"]):
+		(st["errors"] as Array).append({
+			"file": path, "reason": String(r["error"]),
+		})
+		return []
+	return [r]
+
+
+## 读一个 txt，解析出里面所有的投票段
+static func _records_from_text_file(path: String, st: Dictionary) -> Array:
+	if not FileAccess.file_exists(path):
+		(st["errors"] as Array).append({"file": path, "reason": "文件不存在"})
+		return []
+	var txt := FileAccess.get_file_as_string(path)
+	if txt.strip_edges() == "":
+		(st["errors"] as Array).append({"file": path, "reason": "空文件"})
+		return []
+
+	var parsed: Dictionary = VoteText.parse_blocks(txt, path)
+
+	# 把解析器的错误/警告并进总统计
+	for e in (parsed["errors"] as Array):
+		(st["errors"] as Array).append({
+			"file": path,
+			"reason": String((e as Dictionary).get("reason", "")),
+		})
+	for w in (parsed["warnings"] as Array):
+		(st["warnings"] as Array).append({
+			"file": path,
+			"reason": String((w as Dictionary).get("reason", "")),
+		})
+
+	var out: Array = []
+	for rec in (parsed["records"] as Array):
+		var d: Dictionary = rec
+		var name := String(d.get("voter_name", "")).strip_edges()
+		if name == "":
+			continue
+		var bans: Array = d.get("bans", [])
+		var ts := String(d.get("timestamp", ""))
+		out.append({
+			"ok": true,
+			"error": "",
+			"path": path,
+			# 文字里没有 voter_id，用名字当身份。加 text: 前缀避免和 json 的 id 撞车
+			"voter_id": "text:" + name,
+			"voter_name": name,
+			"timestamp": ts,
+			"timestamp_effective": _effective_timestamp(ts, path),
+			"bans": bans,
+			# 下面两个是文字形式特有的，用于「有没有超过上限」的人工/自动检查
+			"declared_count": int(d.get("declared_count", bans.size())),
+			"item_count": int(d.get("item_count", bans.size())),
+			"source_kind": "text",
+		})
+	return out
+
+
+## 同一个人既交了 json（voter_id）又交了文字（text:名字）→ 会被当成两个人
+static func _check_cross_format_dup(by_voter: Dictionary, st: Dictionary) -> void:
+	var by_name := {}          # 名字 -> [voter_id, ...]
+	for vid in by_voter.keys():
+		var rec: Dictionary = by_voter[vid]
+		var nm := String(rec.get("voter_name", ""))
+		if nm == "":
+			continue
+		if not by_name.has(nm):
+			by_name[nm] = []
+		(by_name[nm] as Array).append(String(vid))
+	for nm in by_name.keys():
+		var ids: Array = by_name[nm]
+		if ids.size() <= 1:
+			continue
+		# 同一个名字出现多个 id，才提醒
+		(st["warnings"] as Array).append({
+			"file": "",
+			"reason": "「%s」同时出现在 json 和文字里，会被算成两个人（各自计票），请只保留一种" % String(nm),
+		})
 
 
 # ============================================================
@@ -283,11 +385,39 @@ static func _normalize_ts(raw: String) -> String:
 # ============================================================
 
 ## 票数降序；同票按文件名升序，保证结果稳定可复现
+## （组织者端手动增减票数后要重新排序，所以这个也对外公开）
+static func sort_ranking(ranking: Array) -> void:
+	_sort_ranking(ranking)
+
+
+## 票数降序；同票按文件名升序，保证结果稳定可复现
 static func _sort_ranking(ranking: Array) -> void:
 	ranking.sort_custom(func(a, b) -> bool:
 		if int(a["count"]) != int(b["count"]):
 			return int(a["count"]) > int(b["count"])
 		return String(a["file"]) < String(b["file"]))
+
+
+## 找出「投票数超过上限」的人。limit <= 0 表示不限，返回空数组。
+## 返回 [{voter_name, count, declared_count, file, source_kind}, ...]
+static func find_limit_violations(stats: Dictionary, limit: int) -> Array:
+	var out: Array = []
+	if limit <= 0:
+		return out
+	for v in (stats.get("voters", []) as Array):
+		var d: Dictionary = v
+		var cnt := int(d.get("count", 0))
+		if cnt > limit:
+			out.append({
+				"voter_name": String(d.get("voter_name", "")),
+				"count": cnt,
+				"declared_count": int(d.get("declared_count", cnt)),
+				"file": String(d.get("file", "")),
+				"source_kind": String(d.get("source_kind", "json")),
+			})
+	# 超得多的排前面
+	out.sort_custom(func(a, b) -> bool: return int(a["count"]) > int(b["count"]))
+	return out
 
 
 ## 取 Top N（N <= 0 表示全部）
@@ -375,5 +505,6 @@ static func _empty_stats() -> Dictionary:
 		"banned_set": {},
 		"voter_names_of": {},
 		"errors": [],          # [{file, reason}]
+		"warnings": [],        # [{file, reason}]  非致命：缺结束标记、数量对不上等
 		"duplicates": [],      # [{voter_id, voter_name, kept_file, dropped_file, ...}]
 	}

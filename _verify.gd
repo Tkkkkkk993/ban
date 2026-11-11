@@ -20,6 +20,7 @@ extends Node
 
 const Exporter := preload("res://scripts/vote_exporter.gd")
 const Importer := preload("res://scripts/vote_importer.gd")
+const VText := preload("res://scripts/vote_text.gd")
 
 const FIXTURE_DIR := "user://test_votes"
 const OUT_DIR := "user://test_out"
@@ -53,6 +54,7 @@ func _ready() -> void:
 	_test_exporter()
 	_test_importer_normal()
 	_test_importer_errors()
+	_test_vote_text()
 	await _test_organizer_export()
 	await _test_main_scene()
 	await _test_organizer_scene()
@@ -535,6 +537,181 @@ func _test_importer_errors() -> void:
 		"空目录不报错也不产生投票人")
 
 
+# ---------------- 6.5 文字形式的投票 ----------------
+func _test_vote_text() -> void:
+	print("\n[6.5] 文字形式的投票（生成 + 批量解析 + 超上限）")
+
+	# ---- 生成 ----
+	var entries: Array = [
+		["90001_Portrait", "漩涡鸣人"],
+		["90002_Portrait", "宇智波佐助"],
+		["40001_Portrait", "伊鲁卡"],
+	]
+	var block: String = VText.build_block("张三", entries)
+	print("        ---- 生成的文字 ----")
+	for ln in block.split("\n"):
+		print("        " + ln)
+	_ok(block.contains("玩家：张三"), "文字里有玩家名")
+	_ok(block.contains("数量：3"), "文字里有数量")
+	_ok(block.contains("<90001_Portrait>"), "文字里每个条目带照片ID")
+	_ok(block.contains("漩涡鸣人"), "文字里有中文显示名")
+	_ok(block.contains("=====BAN投票开始====="), "有开始标记")
+	_ok(block.contains("=====BAN投票结束====="), "有结束标记")
+
+	# ---- 解析单段 ----
+	var p1: Dictionary = VText.parse_blocks(block, "inline")
+	_ok((p1["records"] as Array).size() == 1, "单段解析出 1 条")
+	if (p1["records"] as Array).size() == 1:
+		var r: Dictionary = (p1["records"] as Array)[0]
+		_ok(String(r["voter_name"]) == "张三", "解析出玩家名：%s" % String(r["voter_name"]))
+		_ok(int(r["item_count"]) == 3, "解析出 3 个条目")
+		_ok(int(r["declared_count"]) == 3, "解析出声明的数量 3")
+		var bans: Array = r["bans"]
+		_ok(bans.size() == 3 and String(bans[0]) == "90001_Portrait",
+			"照片ID解析正确：%s" % str(bans))
+
+	# ---- 一个 txt 里攒多段 ----
+	var multi := ""
+	for nm in ["甲", "乙", "丙"]:
+		multi += VText.build_block(nm, [["90001_Portrait", "漩涡鸣人"]]) + "\n\n"
+	var p2: Dictionary = VText.parse_blocks(multi, "multi.txt")
+	_ok((p2["records"] as Array).size() == 3,
+		"多段能一次解析出 3 条（实际 %d）" % (p2["records"] as Array).size())
+	var names2: Array[String] = []
+	for rec in (p2["records"] as Array):
+		names2.append(String((rec as Dictionary)["voter_name"]))
+	_ok(names2 == ["甲", "乙", "丙"], "三段玩家名正确：%s" % str(names2))
+
+	# ---- 微信粘过来被搞乱的情况 ----
+	var messy := """玩家: 赵六
+数量: 2
+名单:
+1、漩涡鸣人 <90001_Portrait>
+2)宇智波佐助<90002_Portrait>
+
+玩家：钱七
+1. 伊鲁卡 <40001_Portrait>"""
+	var p3: Dictionary = VText.parse_blocks(messy, "messy.txt")
+	_ok((p3["records"] as Array).size() == 2,
+		"没有标记 + 半角冒号 + 不同序号写法也能解析出 2 条（实际 %d）" % (p3["records"] as Array).size())
+	if (p3["records"] as Array).size() == 2:
+		var a: Dictionary = (p3["records"] as Array)[0]
+		var b: Dictionary = (p3["records"] as Array)[1]
+		_ok(String(a["voter_name"]) == "赵六" and int(a["item_count"]) == 2,
+			"赵六解析出 2 个（%s）" % str(a["bans"]))
+		_ok(String(b["voter_name"]) == "钱七" and int(b["item_count"]) == 1,
+			"钱七解析出 1 个（%s）" % str(b["bans"]))
+
+	# ---- 数量对不上要提醒 ----
+	var bad_count := """=====BAN投票开始=====
+玩家：孙八
+数量：5
+名单：
+1. 漩涡鸣人 <90001_Portrait>
+2. 宇智波佐助 <90002_Portrait>
+=====BAN投票结束====="""
+	var p4: Dictionary = VText.parse_blocks(bad_count, "bad.txt")
+	_ok((p4["records"] as Array).size() == 1, "数量对不上时仍然解析出 1 条")
+	var warns4: Array = p4["warnings"]
+	var has_mismatch := false
+	for w in warns4:
+		if String((w as Dictionary)["reason"]).contains("声明 5 个"):
+			has_mismatch = true
+	_ok(has_mismatch, "数量声明与实际不符时给出提醒（%d 条提醒）" % warns4.size())
+
+	# ---- 没有照片ID时按显示名反查 ----
+	var no_id := """玩家：周九
+1. 漩涡鸣人
+2. 宇智波佐助"""
+	var p5: Dictionary = VText.parse_blocks(no_id, "noid.txt")
+	_ok((p5["records"] as Array).size() == 1, "没有ID也能解析出 1 条")
+	if (p5["records"] as Array).size() == 1:
+		var bans5: Array = ((p5["records"] as Array)[0] as Dictionary)["bans"]
+		_info("按名字反查结果：%s" % str(bans5))
+		# 显示名有重名，反查可能失败；只要不崩、条数对就行
+		_ok(bans5.size() == 2, "两个条目都被保留（%d）" % bans5.size())
+
+	# ---- 空内容 ----
+	var p6: Dictionary = VText.parse_blocks("   \n\n  ", "empty.txt")
+	_ok((p6["records"] as Array).size() == 0 and (p6["errors"] as Array).size() > 0,
+		"空文本报错而不是崩溃")
+
+	# ---- 端到端：写一个攒了多段的 txt，让导入器批量识别 ----
+	var dir := "user://test_text"
+	_clear_dir(dir)
+	var buf := ""
+	buf += VText.build_block("甲", [
+		["90001_Portrait", "漩涡鸣人"], ["90002_Portrait", "宇智波佐助"]])
+	buf += "\n\n"
+	buf += VText.build_block("乙", [
+		["90001_Portrait", "漩涡鸣人"]])
+	buf += "\n\n"
+	buf += VText.build_block("丙", [
+		["90001_Portrait", "漩涡鸣人"], ["90003_Portrait", "春野樱"],
+		["90004_Portrait", "旗木卡卡西"], ["40001_Portrait", "伊鲁卡"]])
+	_write_file(dir.path_join("群友文字.txt"), buf)
+
+	var st: Dictionary = Importer.import_paths([dir])
+	_ok(int(st["voter_count"]) == 3,
+		"一个 txt 里的 3 段被识别成 3 个人（实际 %d）" % int(st["voter_count"]))
+	var rank: Array = st["ranking"]
+	var got := {}
+	for r in rank:
+		got[String((r as Dictionary)["file"])] = int((r as Dictionary)["count"])
+	_ok(int(got.get("90001_Portrait", 0)) == 3,
+		"90001 被 3 个人 Ban（实际 %d）" % int(got.get("90001_Portrait", 0)))
+	_ok(int(got.get("90002_Portrait", 0)) == 1, "90002 被 1 个人 Ban")
+	_ok(int(got.get("40001_Portrait", 0)) == 1, "40001 被 1 个人 Ban")
+
+	# ---- 超上限检查 ----
+	var over1: Array = Importer.find_limit_violations(st, 0)
+	_ok(over1.size() == 0, "上限填 0 时不做检查")
+	var over2: Array = Importer.find_limit_violations(st, 3)
+	_ok(over2.size() == 1, "上限 3 时抓出 1 个超的（实际 %d）" % over2.size())
+	if over2.size() == 1:
+		var od: Dictionary = over2[0]
+		_ok(String(od["voter_name"]) == "丙" and int(od["count"]) == 4,
+			"超上限的是丙，投了 4 个（%s / %d）" % [String(od["voter_name"]), int(od["count"])])
+	var over3: Array = Importer.find_limit_violations(st, 4)
+	_ok(over3.size() == 0, "上限放到 4 就没人超了")
+
+	# ---- 文字 + json 混着导 ----
+	var mixdir := "user://test_mix"
+	_clear_dir(mixdir)
+	_write_file(mixdir.path_join("群友文字.txt"),
+		VText.build_block("甲", [["90001_Portrait", "漩涡鸣人"]]))
+	_write_vote_file(mixdir, "b.json", "v_b", "乙", "2026-11-11T10:00:00",
+		["90001_Portrait"])
+	var stmix: Dictionary = Importer.import_paths([mixdir])
+	_ok(int(stmix["voter_count"]) == 2,
+		"json 和 txt 能一起导入（%d 人）" % int(stmix["voter_count"]))
+	_ok(int((stmix["ranking"] as Array)[0]["count"]) == 2,
+		"两个人 Ban 同一个 → 2 票")
+
+	print("\n[6.6] 玩家端「复制投票文本」")
+	var dm = get_node("/root/DataManager")
+	var il = get_node("/root/ImageLoader")
+	dm.voter_name = "文字玩家"
+	dm.ensure_voter_id()
+	dm.clear_all()
+	var photo_a := String(il.photos[0]["photo"]) if il.photos.size() > 0 else "x"
+	var photo_b := String(il.photos[1]["photo"]) if il.photos.size() > 1 else "y"
+	dm.set_ban(photo_a, true)
+	dm.set_ban(photo_b, true)
+	var real_block: String = VText.build_block("文字玩家", [
+		[photo_a, il.get_display_name(photo_a)],
+		[photo_b, il.get_display_name(photo_b)],
+	])
+	_ok(real_block.contains("数量：2"), "真实数据生成的文字数量正确")
+	var rp: Dictionary = VText.parse_blocks(real_block, "real")
+	_ok((rp["records"] as Array).size() == 1, "真实数据生成的文字能被自己解析回来")
+	if (rp["records"] as Array).size() == 1:
+		var rb: Array = ((rp["records"] as Array)[0] as Dictionary)["bans"]
+		_ok(String(rb[0]) == photo_a and String(rb[1]) == photo_b,
+			"解析回来的照片ID和原来一致（%s）" % str(rb))
+	dm.clear_all()
+
+
 # ---------------- 7. 汇总导出 ----------------
 func _test_organizer_export() -> void:
 	print("\n[7] 汇总导出（json / txt / png）")
@@ -613,6 +790,16 @@ func _test_main_scene() -> void:
 	# 自检没必要真加载上千张，压到 30 张
 	il.max_load_count = 30
 
+	# 【回归测试】预先存好 2 票，再打开主界面：
+	# 之前从组织者模式返回玩家模式时，右侧 Ban 名单是空的，
+	# 要点一下新角色才"刷"回来。这里断言开局就得显示出来。
+	var seeded: Array[String] = []
+	for i in range(mini(2, il.photos.size())):
+		var p := String(il.photos[i]["photo"])
+		seeded.append(p)
+		dm.set_ban(p, true)
+	_info("预先存了 %d 票：%s" % [seeded.size(), str(seeded)])
+
 	get_tree().root.add_child(main)
 	await get_tree().process_frame
 
@@ -629,6 +816,7 @@ func _test_main_scene() -> void:
 	_ok(btns.has("导出我的投票"), "有「导出我的投票」按钮")
 	_ok(btns.has("清空我的投票"), "有「清空我的投票」按钮")
 	_ok(btns.has("改名"), "有「改名」按钮")
+	_ok(btns.has("复制投票文本"), "有「复制投票文本」按钮")
 	_ok(not btns.has("＋ 投票人"), "已经去掉了「＋投票人」按钮")
 	_ok(main.get_node_or_null("Root/VBox/HeaderBox/HeaderRow/OrganizerBtn") != null,
 		"有组织者模式入口按钮")
@@ -653,25 +841,74 @@ func _test_main_scene() -> void:
 		_ok(card.get("character_name") != "", "首张卡片有显示名：%s" % str(card.get("character_name")))
 		_ok(card.call("get_texture") != null, "首张卡片有纹理")
 
-	# 通过 UI 投票
+	# 【回归】开局就必须显示已存的投票（不能等点一下才刷出来）
+	if seeded.size() > 0:
+		var bp = main.get_node_or_null("Root/VBox/Body/BanPanelWrap/BanListPanel")
+		_ok(bp != null, "右侧 Ban 名单面板存在")
+		if bp != null:
+			var lb: VBoxContainer = bp.get_node("Margin/VBox/ScrollContainer/ListBox")
+			var cl: Label = bp.get_node("Margin/VBox/Header/HeaderMargin/HeaderBox/CountLabel")
+			_ok(lb.get_child_count() == seeded.size(),
+				"开局右侧名单就有 %d 行（实际 %d）—— 不该等点一下才出现" % [
+					seeded.size(), lb.get_child_count()])
+			_ok(cl.text == "%d 个" % seeded.size(),
+				"开局计数正确（%s）" % cl.text)
+		# 卡片也要是已 Ban 状态
+		var all_shown := true
+		for c in flow.get_children():
+			var p := String((c as Node).get("photo"))
+			if seeded.has(p) and (c as Node).get("banned") != true:
+				all_shown = false
+		_ok(all_shown, "已 Ban 的那几张卡片开局就显示橙框 + ✓")
+
+	# 通过 UI 投票（挑一张「没被预置 Ban」的卡片，才能测到「点一下变已 Ban」）
 	if made > 0:
-		var first_photo := String((flow.get_child(0) as Node).get("photo"))
+		var first_photo := ""
+		for c in flow.get_children():
+			var p := String((c as Node).get("photo"))
+			if not seeded.has(p):
+				first_photo = p
+				break
+		var clicked_card: Node = null
+		for c in flow.get_children():
+			if String((c as Node).get("photo")) == first_photo:
+				clicked_card = c
+				break
 		main.call("_on_card_vote_toggled", first_photo, true)
 		await get_tree().process_frame
 		_ok(dm.is_banned(first_photo), "点卡片后进入 Ban 名单")
-		_ok(flow.get_child(0).get("banned") == true, "卡片显示为已 Ban 状态")
+		_ok(clicked_card != null and clicked_card.get("banned") == true, "卡片显示为已 Ban 状态")
 		main.call("_on_card_vote_toggled", first_photo, false)
 		await get_tree().process_frame
 		_ok(not dm.is_banned(first_photo), "再点一次取消")
 
 		# 导出（走 UI 入口）
+		# 【别用「文件数变多」判断】导出文件名带的是秒级时间戳，
+		# 同一秒内重复导出会覆盖同名文件 → 文件数不变 → 假失败。
+		# 改成验证「真的走到了成功分支」：成功时创建 ExportDoneDialog，
+		# 失败时走 _show_message（没有这个名字的节点）。
 		dm.toggle_ban(first_photo)
-		var before := _count_files("user://exports")
-		main.call("_on_export_pressed")
+		# 现在 _on_export_pressed 会弹「选文件夹」，自检里直接调写盘那一步
+		var out_dir := ProjectSettings.globalize_path("user://exports")
+		main.call("_export_to_folder", out_dir)
 		await get_tree().process_frame
 		await get_tree().process_frame
-		var after := _count_files("user://exports")
-		_ok(after > before, "点「导出我的投票」后 exports 目录多了 %d 个文件" % (after - before))
+		_ok(main.get_node_or_null("ExportDoneDialog") != null,
+			"点「导出我的投票」后弹出「导出完成」= 导出成功")
+		var exp_dlg = main.get_node_or_null("ExportDoneDialog")
+		if exp_dlg != null:
+			var path_edit = exp_dlg.get_node_or_null("MarginContainer/ExportDirEdit")
+			# 确认弹窗里给出了 json 路径控件
+			var json_edit = _find_line_edit_named(exp_dlg, "JsonPathEdit")
+			_ok(json_edit != null and json_edit.text != "",
+				"导出弹窗里显示了 json 完整路径：%s" % (json_edit.text if json_edit else "(无)"))
+			if json_edit != null:
+				_ok(FileAccess.file_exists(json_edit.text.replace("\\", "/")) or
+					FileAccess.file_exists(_to_user_path(json_edit.text)),
+					"弹窗里显示的 json 文件确实存在")
+			(exp_dlg as AcceptDialog).hide()
+			exp_dlg.queue_free()
+			await get_tree().process_frame
 
 		# ---- 新功能 1：右侧 Ban 名单面板 ----
 		await _test_ban_panel(main, dm, flow, first_photo)
@@ -777,7 +1014,7 @@ func _test_export_dir(main: Control, dm: Node) -> void:
 	# 导出确实落到自定义目录
 	var before := _count_files(custom)
 	var exp = load("res://scripts/vote_exporter.gd")
-	dm.set_ban("90001_headshot", true)
+	dm.set_ban(_first_photo(), true)
 	var res: Dictionary = exp.save_vote_file(dm.voter_name, dm.voter_id,
 		dm.get_bans(), dm.effective_export_dir())
 	_ok(bool(res["ok"]), "导出到自定义目录成功")
@@ -811,12 +1048,19 @@ func _test_export_dir(main: Control, dm: Node) -> void:
 
 
 ## 右键查看大图：弹窗不能被撑出屏幕、必须有图
-func _test_preview_dialog(main: Control, dm) -> void:
+## 【别硬编码照片 ID】头像文件名会变（_headshot → _Portrait），
+## 所以这里从 ImageLoader 实际扫描结果里取第一张。
+func _test_preview_dialog(main: Control, dm: Node) -> void:
 	print("\n        --- 右键查看大图 ---")
-	# 先确保有一张图
-	dm.set_ban("20001_headshot", true)
+	var il = get_node("/root/ImageLoader")
+	if il.photos.is_empty():
+		_ok(false, "没有头像可用，无法测预览")
+		return
+	var photo := String(il.photos[0]["photo"])
+	_info("用这个照片测预览：%s" % photo)
+	dm.set_ban(photo, true)
 	await get_tree().process_frame
-	main.call("_on_card_preview_requested", "20001_headshot")
+	main.call("_on_card_preview_requested", photo)
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var dlg = main.get_node_or_null("PreviewDialog")
@@ -867,6 +1111,36 @@ func _count_files(dir: String) -> int:
 	return n
 
 
+## 取当前头像目录里第一张照片的 ID（避免测试硬编码已改名的旧 ID）
+func _first_photo() -> String:
+	var il = get_node("/root/ImageLoader")
+	if il.photos.is_empty():
+		il.scan_directory()
+	if il.photos.is_empty():
+		return ""
+	return String(il.photos[0]["photo"])
+
+
+## 按节点名递归找 LineEdit
+func _find_line_edit_named(n: Node, wanted: String) -> LineEdit:
+	if n is LineEdit and n.name == wanted:
+		return n as LineEdit
+	for c in n.get_children():
+		var r := _find_line_edit_named(c, wanted)
+		if r != null:
+			return r
+	return null
+
+
+## 把绝对路径换回 user:// 形式（Godot 的 FileAccess 认 user://）
+func _to_user_path(abs_path: String) -> String:
+	var ud := ProjectSettings.globalize_path("user://")
+	var a := abs_path.replace("\\", "/")
+	if a.begins_with(ud):
+		return "user://" + a.substr(ud.length())
+	return a
+
+
 # ---------------- 9. Organizer 场景 ----------------
 func _test_organizer_scene() -> void:
 	print("\n[9] Organizer（组织者端）场景启动检查")
@@ -894,6 +1168,11 @@ func _test_organizer_scene() -> void:
 	for want in ["导入文件", "导入文件夹", "清空已导入",
 			"导出汇总 JSON", "导出汇总 PNG", "导出汇总 TXT"]:
 		_ok(btns.has(want), "有「%s」按钮" % want)
+	# 每人上限检查控件（不是按钮，单独断言）
+	var lim = org.get("_limit_spin")
+	_ok(lim != null, "组织者端有「每人上限」输入框")
+	if lim != null:
+		_ok(int((lim as SpinBox).value) == 0, "每人上限默认 0（不检查）")
 
 	# 导入 fixture 并渲染
 	org.call("_do_import", [FIXTURE_DIR])
@@ -906,10 +1185,113 @@ func _test_organizer_scene() -> void:
 	_ok(summary.text.contains("参与 3 人"), "概览显示参与人数：%s" % summary.text)
 	_info("概览：%s" % summary.text)
 
+	# ---- 手动增减票数（防呆）----
+	print("\n        --- 手动增减票数 ---")
+	var st_raw: Dictionary = org.get("_stats_raw")
+	var ranking: Array = st_raw.get("ranking", [])
+	var target_photo := String((ranking[0] as Dictionary)["file"])
+	var raw_count := int((ranking[0] as Dictionary)["count"])
+	_info("拿第一名试：%s，原 %d 票" % [target_photo, raw_count])
+
+	var warn: Label = org.get("_manual_warn")
+	_ok(warn != null, "有「手动调整」警告条节点")
+	_ok(warn != null and not warn.visible, "没调整时警告条是隐藏的")
+
+	var raw_file_before := ""
+	var raw_json_path: String = "user://test_manual_raw/vote_a.json"
+	raw_file_before = FileAccess.get_file_as_string(raw_json_path)
+
+	org.call("_bump", target_photo, 1)
+	await get_tree().process_frame
+	var st_adj: Dictionary = org.get("_stats")
+	var adj_count := -1
+	var adj_raw := -1
+	var adj_delta := 0
+	for r in (st_adj.get("ranking", []) as Array):
+		if String((r as Dictionary)["file"]) == target_photo:
+			adj_count = int((r as Dictionary)["count"])
+			adj_raw = int((r as Dictionary).get("raw_count", -1))
+			adj_delta = int((r as Dictionary).get("manual_delta", 0))
+	_ok(adj_count == raw_count + 1, "加 1 票后显示 %d（原 %d）" % [adj_count, raw_count])
+	_ok(adj_raw == raw_count, "保留了原始票数 raw_count=%d" % adj_raw)
+	_ok(adj_delta == 1, "记录了手动增量 +1")
+	_ok(bool(org.call("has_manual_adjustment")), "has_manual_adjustment 为真")
+	_ok(warn.visible, "调整后警告条显示出来")
+	_ok(warn.text.contains("验证是否公平公正"), "警告条文案包含「验证是否公平公正」")
+	_info("警告条：%s" % warn.text)
+	var clr: Button = org.get("_manual_clear_btn")
+	_ok(clr != null and clr.visible, "出现「撤销手动调整」按钮")
+
+	# 原始导入的数据不能被改动
+	_ok(FileAccess.get_file_as_string(raw_json_path) == raw_file_before,
+		"原始投票文件没有被修改（只改内存里的展示结果）")
+	var still_raw: Dictionary = org.get("_stats_raw")
+	var raw_first := int(((still_raw["ranking"] as Array)[0] as Dictionary)["count"])
+	_ok(raw_first == raw_count, "_stats_raw 仍是原始值 %d" % raw_first)
+
+	# 加够票数应该能反超，验证真的重排了
+	# 注意：第一名刚才已经 +1 变成 (raw_count + 1) 票，要严格超过它才行
+	var second_photo := String((ranking[1] as Dictionary)["file"])
+	var second_cnt := int((ranking[1] as Dictionary)["count"])
+	var need: int = (raw_count + 1) - second_cnt + 1
+	for i in range(need):
+		org.call("_bump", second_photo, 1)
+	await get_tree().process_frame
+	var st3: Dictionary = org.get("_stats")
+	var new_first := String(((st3["ranking"] as Array)[0] as Dictionary)["file"])
+	_ok(new_first == second_photo,
+		"加够票后第 2 名反超成第 1 名（+%d 票，现在第 1 是 %s）" % [need, new_first])
+
+	# 减到 0 应该从排名里消失
+	var third := ""
+	for r in (ranking as Array):
+		var p := String((r as Dictionary)["file"])
+		if p != target_photo and p != second_photo:
+			third = p
+			break
+	if third != "":
+		var third_cnt := 0
+		for r in (ranking as Array):
+			if String((r as Dictionary)["file"]) == third:
+				third_cnt = int((r as Dictionary)["count"])
+		for i in range(third_cnt):
+			org.call("_bump", third, -1)
+		await get_tree().process_frame
+		var st4: Dictionary = org.get("_stats")
+		var still_there := false
+		for r in (st4.get("ranking", []) as Array):
+			if String((r as Dictionary)["file"]) == third:
+				still_there = true
+		_ok(not still_there, "减到 0 票的忍者从排名里消失了")
+
+	# 导出要带上警告
+	var mdir := "user://test_manual_out"
+	_clear_dir(mdir)
+	DirAccess.make_dir_recursive_absolute(mdir)
+	org.call("_export_json_to", ProjectSettings.globalize_path(mdir))
+	org.call("_export_txt_to", ProjectSettings.globalize_path(mdir))
+	await get_tree().process_frame
+	var js := FileAccess.get_file_as_string(mdir.path_join("final_result.json"))
+	var tx := FileAccess.get_file_as_string(mdir.path_join("final_result.txt"))
+	_ok(js.contains("manual_adjustment"), "导出的 json 里有 manual_adjustment 字段")
+	_ok(js.contains("验证是否公平公正"), "导出的 json 里有警告语")
+	_ok(tx.contains("验证是否公平公正"), "导出的 txt 里有警告语")
+	_ok(tx.strip_edges().begins_with("⚠"), "导出的 txt 第一行就是警告")
+
+	# 撤销
+	org.call("_on_clear_manual")
+	await get_tree().process_frame
+	_ok(not bool(org.call("has_manual_adjustment")), "撤销后没有手动调整")
+	_ok(not warn.visible, "撤销后警告条隐藏")
+	var st5: Dictionary = org.get("_stats")
+	var back := int(((st5["ranking"] as Array)[0] as Dictionary)["count"])
+	_ok(back == raw_count, "撤销后票数回到原始值 %d" % back)
+
 	# 清空
 	org.call("_on_clear_pressed")
 	await get_tree().process_frame
 	_ok(int((org.get("_stats") as Dictionary).get("voter_count", 0)) == 0, "清空后没有投票人")
+	_ok(not bool(org.call("has_manual_adjustment")), "清空后手动调整也被清掉")
 
 	org.queue_free()
 	await get_tree().process_frame

@@ -83,24 +83,36 @@ func _run_player_mode() -> void:
 			pv.queue_free()
 			await _wait(0.4)
 
-	# 导出目录设置面板（本轮新增）
-	_main.call("_on_pick_export_dir")
-	await _wait(0.9)
-	await _shot("02d_导出目录设置")
-	# 关掉它，免得挡住后面的导出弹窗
-	for c in _main.get_children():
-		if c.name == "ExportDirDialog":
-			(c as Window).hide()
-			c.queue_free()
-	await _wait(0.4)
-
-	# 导出
+	# 说明：导出位置现在改成「点导出 → 弹系统『选文件夹』」。
+	# 那是操作系统的原生窗口，不在游戏视口里，截图抓不到，
+	# 所以下面只用日志确认它被创建，并截「导出完成」弹窗。
+	# 导出：先确认会弹「选文件夹」，再直接调写盘那一步截图
 	var before := _count_files("user://exports")
 	_main.call("_on_export_pressed")
+	await _wait(0.6)
+	print("选文件夹对话框是否弹出：", get_tree().root.find_child("FolderPicker", true, false) != null)
+	# 关掉它（自检不真的点系统对话框）
+	var fp = get_tree().root.find_child("FolderPicker", true, false)
+	if fp != null:
+		(fp as Window).hide()
+		fp.queue_free()
+	await _wait(0.3)
+	_main.call("_export_to_folder", ProjectSettings.globalize_path("user://exports"))
 	await _wait(1.0)
 	await _shot("03_玩家模式_导出弹窗")
 	var after := _count_files("user://exports")
 	print("导出前后 exports 文件数：%d -> %d" % [before, after])
+
+	# 关掉导出完成弹窗，再演示「复制投票文本」
+	for c in _main.get_children():
+		if c.name == "ExportDoneDialog":
+			(c as Window).hide()
+			c.queue_free()
+	await _wait(0.4)
+	_main.call("_on_copy_text_pressed")
+	await _wait(1.0)
+	await _shot("03b_复制投票文本")
+	print("剪贴板内容长度：", DisplayServer.clipboard_get().length())
 
 	_main.queue_free()
 	await _wait(0.4)
@@ -122,12 +134,21 @@ func _run_organizer_mode() -> void:
 		int(stats.get("voter_count", 0)), (stats.get("ranking", []) as Array).size()])
 	await _shot("05_组织者模式_已汇总")
 
-	# 导出三件套
-	var ok_json: bool = _export_and_report("json")
-	var ok_txt: bool = _export_and_report("txt")
-	_org.call("_on_export_png")
-	await _wait(2.0)
-	var png_path := "user://exports/final_result.png"
+	# 演示「每人上限」检查：把上限设成 1，必然有人超
+	var lim: SpinBox = _org.get("_limit_spin")
+	if lim != null:
+		lim.value = 1
+		await _wait(0.8)
+		await _shot("05b_每人上限检查")
+		print("把每人上限设成 1，看有没有超")
+
+	# 导出三件套（现在是先弹「选文件夹」；截图脚本直接调写盘那一步）
+	var out_dir := ProjectSettings.globalize_path("user://exports")
+	var ok_json: bool = _export_and_report("json", out_dir)
+	var ok_txt: bool = _export_and_report("txt", out_dir)
+	await _org.call("_export_png_to", out_dir)
+	await _wait(1.5)
+	var png_path := out_dir.path_join("final_result.png")
 	var ok_png: bool = FileAccess.file_exists(png_path)
 	print("导出 PNG：%s" % ("成功" if ok_png else "失败"))
 	if ok_png:
@@ -141,13 +162,13 @@ func _run_organizer_mode() -> void:
 	await _wait(0.4)
 
 
-func _export_and_report(kind: String) -> bool:
+func _export_and_report(kind: String, out_dir: String) -> bool:
 	match kind:
 		"json":
-			_org.call("_on_export_json")
+			_org.call("_export_json_to", out_dir)
 		"txt":
-			_org.call("_on_export_txt")
-	var path := "user://exports/final_result.%s" % kind
+			_org.call("_export_txt_to", out_dir)
+	var path := out_dir.path_join("final_result.%s" % kind)
 	var exists := FileAccess.file_exists(path)
 	print("导出 %s：%s" % [kind.to_upper(), "成功" if exists else "失败"])
 	if exists and kind == "txt":

@@ -17,6 +17,8 @@ extends Control
 
 const UITheme := preload("res://scripts/ui_theme.gd")
 const VoteExporter := preload("res://scripts/vote_exporter.gd")
+const VoteText := preload("res://scripts/vote_text.gd")
+const UIFilePicker := preload("res://scripts/ui_file_picker.gd")
 
 const CARD_SCENE := preload("res://scenes/CharacterCard.tscn")
 const ORGANIZER_SCENE := "res://scenes/Organizer.tscn"
@@ -53,8 +55,8 @@ var _import_btn: Button
 var _load_all_btn: Button
 var _clear_btn: Button
 var _export_btn: Button
+var _copy_text_btn: Button
 var _rename_btn: Button
-var _export_dir_btn: Button
 var _rescan_btn: Button
 var _help_btn: Button
 
@@ -157,7 +159,9 @@ func _build_name_dialog() -> void:
 	_name_dialog.name = "NameDialog"
 	_name_dialog.title = "欢迎"
 	_name_dialog.ok_button_text = "确定"
-	_name_dialog.min_size = Vector2i(420, 190)
+	_name_dialog.min_size = Vector2i(440, 210)
+	# 关掉「按内容自动撑大」，否则配合自动换行标签会失控
+	_name_dialog.wrap_controls = false
 	_name_dialog.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
 			UITheme.BORDER, 1, 14))
@@ -189,6 +193,10 @@ func _build_name_dialog() -> void:
 	var hint := Label.new()
 	hint.text = "这个名字会显示在导出的投票文件名和内容里，方便组织者认人。"
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# 【必须给定宽度】自动换行的 Label 在被测量时宽度是 0，
+	# 会算出「需要极高」的最小高度，把弹窗撑到几百像素高（实测 715px）。
+	# 显式给个宽度，它才知道按几行算。
+	hint.custom_minimum_size = Vector2(400, 0)
 	UITheme.style_label(hint, 11, UITheme.TEXT_MUTED)
 	vbox.add_child(hint)
 
@@ -203,7 +211,7 @@ func _prompt_for_name(required: bool) -> void:
 	_name_edit.text = DataManager.voter_name
 	_name_dialog.dialog_text = ""
 	_name_dialog.title = "欢迎使用 Naruto Ban Picker" if required else "改名"
-	_name_dialog.popup_centered(Vector2i(430, 200))
+	_name_dialog.popup_centered(Vector2i(440, 210))
 	_name_edit.grab_focus()
 	_name_edit.select_all()
 
@@ -306,6 +314,15 @@ func _build_toolbar() -> void:
 	_export_btn.pressed.connect(_on_export_pressed)
 	_toolbar.add_child(_export_btn)
 
+	_copy_text_btn = Button.new()
+	_copy_text_btn.name = "CopyTextBtn"
+	_copy_text_btn.text = "复制投票文本"
+	_copy_text_btn.tooltip_text = "把这次投票变成一段文字并复制到剪贴板，直接粘到群里发给组织者（Ctrl+T）"
+	UITheme.apply_button(_copy_text_btn)
+	_copy_text_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_copy_text_btn.pressed.connect(_on_copy_text_pressed)
+	_toolbar.add_child(_copy_text_btn)
+
 	_rename_btn = Button.new()
 	_rename_btn.name = "RenameBtn"
 	_rename_btn.text = "改名"
@@ -314,15 +331,6 @@ func _build_toolbar() -> void:
 	_rename_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_rename_btn.pressed.connect(func() -> void: _prompt_for_name(false))
 	_toolbar.add_child(_rename_btn)
-
-	_export_dir_btn = Button.new()
-	_export_dir_btn.name = "ExportDirBtn"
-	_export_dir_btn.text = "导出目录"
-	_export_dir_btn.tooltip_text = "选择投票 json/txt 导出到哪里（会记住）"
-	UITheme.apply_button(_export_dir_btn)
-	_export_dir_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_export_dir_btn.pressed.connect(_on_pick_export_dir)
-	_toolbar.add_child(_export_dir_btn)
 
 	_rescan_btn = Button.new()
 	_rescan_btn.name = "RescanBtn"
@@ -463,6 +471,7 @@ func _on_rescan_pressed() -> void:
 #  卡片
 # ============================================================
 func _on_batch_loaded(items: Array) -> void:
+	var made := 0
 	for it in items:
 		var photo := String(it.get("photo", ""))
 		var tex: Texture2D = it.get("texture", null)
@@ -470,9 +479,15 @@ func _on_batch_loaded(items: Array) -> void:
 		if existing != null:
 			existing.set_texture(tex)
 			continue
-		_make_card(photo, tex)
+		if _make_card(photo, tex) != null:
+			made += 1
 	_loaded_count = ImageLoader.get_finished_count()
-	_apply_filter()
+	if made > 0:
+		_apply_filter()
+	# 【重要】卡片建好后必须刷一次右侧名单。
+	# 否则从组织者模式返回玩家模式时，右侧「我的 Ban 名单」是空的，
+	# 要点一下新角色（触发 data_changed → _refresh_all）才会「刷」回来。
+	_refresh_ban_panel()
 	_update_status()
 	_update_buttons()
 
@@ -499,6 +514,7 @@ func _on_all_loaded() -> void:
 	_loading = false
 	_loaded_count = ImageLoader.get_finished_count()
 	_apply_filter()
+	_refresh_ban_panel()
 	_update_status()
 	_update_buttons()
 
@@ -524,7 +540,14 @@ func _refresh_all() -> void:
 
 
 func _refresh_card(card: CharacterCard) -> void:
-	card.set_vote_state(DataManager.is_banned(card.photo), "", _ban_summary())
+	# 【注意】别把「我的全部 Ban 名单摘要」塞给每一张卡：
+	# 那样所有已 Ban 的卡片会显示同一句话（曾出现三张卡都写「我的 Ban：志村团藏」）。
+	# 卡片上只显示它自己的信息，完整名单交给右侧面板。
+	if DataManager.is_banned(card.photo):
+		var idx := DataManager.get_bans().find(card.photo) + 1
+		card.set_vote_state(true, "", "✓ 我的第 %d 个 Ban" % idx)
+	else:
+		card.set_vote_state(false, "", "")
 
 
 ## 卡片底部那行小字：我的名单摘要（如「我的 Ban：鸣人、佐助、小樱」）
@@ -570,32 +593,49 @@ func _on_ban_row_clicked(photo: String) -> void:
 # ============================================================
 #  导出
 # ============================================================
+## 点「导出我的投票」→ 先让用户选一个文件夹，再导出到那里。
+## 不再偷偷写到 AppData 深处，也不用旁边那个「导出目录」按钮预设。
 func _on_export_pressed() -> void:
 	if not DataManager.has_name():
 		_prompt_for_name(true)
 		return
+	if DataManager.get_ban_count() == 0:
+		_show_message("还没有投票", "你还没有 Ban 任何忍者。\n点卡片选几个，再回来导出。")
+		return
+	# 起始目录 = 上次用过的（存在 votes.json 里），没有就桌面/文档
+	UIFilePicker.pick_folder(self, "选择导出到哪个文件夹",
+		DataManager.export_dir,
+		func(dir: String) -> void: _export_to_folder(dir))
+
+
+## 真正写盘（选完目录后调用；自检也直接调这个，绕开文件对话框）
+func _export_to_folder(dir: String) -> void:
+	# 记住这次选的目录，下次选择器从这里开始
+	DataManager.set_export_dir(dir)
+
 	var bans := DataManager.get_bans()
 	var vid := DataManager.ensure_voter_id()
-	var out_dir := DataManager.effective_export_dir()
-
 	var r: Dictionary = VoteExporter.save_vote_file(
-		DataManager.voter_name, vid, bans, out_dir)
+		DataManager.voter_name, vid, bans, dir)
 	if not bool(r["ok"]):
 		_show_message("导出失败", "导出投票失败：\n%s" % String(r["error"]))
 		return
 	var tr: Dictionary = VoteExporter.save_vote_text_file(
-		DataManager.voter_name, bans, out_dir)
+		DataManager.voter_name, bans, dir)
 	_show_export_dialog(String(r["path"]), String(tr.get("path", "")), bans.size())
 
 
-## 导出完成弹窗：可改「下次导出到哪里」，选择会记住
+## 导出完成弹窗
 func _show_export_dialog(json_path: String, txt_path: String, count: int) -> void:
 	var dlg := AcceptDialog.new()
 	dlg.name = "ExportDoneDialog"
 	dlg.title = "导出完成"
 	dlg.ok_button_text = "关闭"
-	dlg.min_size = Vector2i(660, 400)
-	dlg.max_size = Vector2i(900, 700)
+	dlg.min_size = Vector2i(680, 270)
+	dlg.max_size = Vector2i(680, 270)
+	# 关掉「按内容自动撑大」：里面有自动换行的提示标签，
+	# 自动测量时宽度为 0 会把弹窗撑到 700 多像素高（中间一大片空白）
+	dlg.wrap_controls = false
 	dlg.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
 			UITheme.BORDER, 1, 14))
@@ -654,92 +694,43 @@ func _show_export_dialog(json_path: String, txt_path: String, count: int) -> voi
 		var txt_hint := Label.new()
 		txt_hint.text = "同时导出了文本版（可直接粘到群里）：\n%s" % ProjectSettings.globalize_path(txt_path)
 		txt_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		# 自动换行标签必须给定宽度，否则测量时按 0 宽算，高度会失控
+		txt_hint.custom_minimum_size = Vector2(600, 0)
 		UITheme.style_label(txt_hint, 10, UITheme.TEXT_MUTED)
 		vbox.add_child(txt_hint)
 
-	# ---- 下次导出到哪里（可改，会记住）----
-	vbox.add_child(UITheme.separator())
-
-	var dir_label := Label.new()
-	dir_label.text = "下次导出到（会记住这个选择）："
-	UITheme.style_label(dir_label, 12, UITheme.TEXT)
-	vbox.add_child(dir_label)
-
-	var dir_row := HBoxContainer.new()
-	dir_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(dir_row)
-
-	var dir_edit := LineEdit.new()
-	dir_edit.name = "ExportDirEdit"
-	dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-	dir_edit.editable = false
-	dir_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	dir_edit.custom_minimum_size = Vector2(360, 32)
-	UITheme.apply_input(dir_edit)
-	dir_row.add_child(dir_edit)
-
-	var pick_btn := Button.new()
-	pick_btn.name = "PickDirBtn"
-	pick_btn.text = "选择文件夹…"
-	UITheme.apply_button(pick_btn)
-	dir_row.add_child(pick_btn)
-
-	var reset_btn := Button.new()
-	reset_btn.name = "ResetDirBtn"
-	reset_btn.text = "恢复默认"
-	reset_btn.tooltip_text = "恢复成程序自己的目录（user://exports/）"
-	UITheme.apply_button(reset_btn)
-	dir_row.add_child(reset_btn)
-
-	# 目录选择器（原生对话框）
-	var picker := FileDialog.new()
-	picker.name = "DirPicker"
-	picker.file_mode = FileDialog.FILE_MODE_OPEN_DIR
-	picker.access = FileDialog.ACCESS_FILESYSTEM
-	picker.use_native_dialog = true
-	picker.title = "选择导出目录"
-	picker.dir_selected.connect(func(picked: String) -> void:
-		if DataManager.set_export_dir(picked):
-			dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-			_status_label.text = "下次会导出到：%s" % dir_edit.text
-		else:
-			_show_message("无法使用该目录", "这个目录创建不了或不能写入：\n%s" % picked))
-	dlg.add_child(picker)
-	pick_btn.pressed.connect(func() -> void:
-		picker.current_dir = DataManager.effective_export_dir()
-		picker.popup_centered(Vector2i(860, 600)))
-	reset_btn.pressed.connect(func() -> void:
-		DataManager.reset_export_dir()
-		dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-		_status_label.text = "已恢复默认导出目录")
-
 	dlg.confirmed.connect(func() -> void: dlg.queue_free())
 	dlg.canceled.connect(func() -> void: dlg.queue_free())
-	dlg.popup_centered(Vector2i(680, 430))
+	dlg.popup_centered(Vector2i(680, 270))
 	_status_label.text = "已导出：%s" % ProjectSettings.globalize_path(json_path)
 
 
-func _show_message(title: String, msg: String) -> void:
-	var dlg := AcceptDialog.new()
-	dlg.title = title
-	dlg.dialog_text = msg
-	dlg.ok_button_text = "知道了"
-	dlg.add_theme_stylebox_override("panel",
-		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
-			UITheme.BORDER, 1, 14))
-	add_child(dlg)
-	dlg.confirmed.connect(func() -> void: dlg.queue_free())
-	dlg.canceled.connect(func() -> void: dlg.queue_free())
-	dlg.popup_centered(Vector2i(460, 190))
+## 「复制投票文本」：把这次投票变成一段人看得懂的文字，并放进剪贴板。
+## 这是给「群友只发文字、组织者攒成 txt 批量识别」这条流程用的。
+func _on_copy_text_pressed() -> void:
+	if not DataManager.has_name():
+		_prompt_for_name(true)
+		return
+	var bans := DataManager.get_bans()
+	if bans.is_empty():
+		_show_message("还没有投票", "你还没有 Ban 任何忍者。\n点卡片选几个，再回来复制。")
+		return
+
+	var entries: Array = []
+	for photo in bans:
+		entries.append([photo, ImageLoader.get_display_name(photo)])
+	var block: String = VoteText.build_block(DataManager.voter_name, entries)
+	DisplayServer.clipboard_set(block)
+	_show_text_dialog(block, bans.size(), true)
 
 
-## 工具栏「导出目录」：直接选目录，不用先导出一次
-func _on_pick_export_dir() -> void:
+## 展示一段投票文字（可再次复制）
+func _show_text_dialog(block: String, count: int, already_copied: bool) -> void:
 	var dlg := AcceptDialog.new()
-	dlg.name = "ExportDirDialog"
-	dlg.title = "导出目录"
+	dlg.name = "VoteTextDialog"
+	dlg.title = "我的投票文字"
 	dlg.ok_button_text = "关闭"
-	dlg.min_size = Vector2i(640, 230)
+	dlg.min_size = Vector2i(620, 460)
 	dlg.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
 			UITheme.BORDER, 1, 14))
@@ -756,74 +747,65 @@ func _on_pick_export_dir() -> void:
 	vbox.add_theme_constant_override("separation", 10)
 	margin.add_child(vbox)
 
-	var tip := Label.new()
-	tip.text = "「导出我的投票」生成的 json / txt 会放到这里："
-	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(tip, 12, UITheme.TEXT)
-	vbox.add_child(tip)
+	var title := Label.new()
+	if already_copied:
+		title.text = "已复制到剪贴板（%d 个忍者），直接粘到群里发给组织者" % count
+		title.add_theme_color_override("font_color", Color("7ddc7d"))
+	else:
+		title.text = "我的投票文字（%d 个忍者）" % count
+	UITheme.style_label(title, 14, Color.WHITE)
+	vbox.add_child(title)
 
-	var dir_edit := LineEdit.new()
-	dir_edit.name = "ExportDirEdit"
-	dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-	dir_edit.editable = false
-	dir_edit.custom_minimum_size = Vector2(580, 32)
-	UITheme.apply_input(dir_edit)
-	vbox.add_child(dir_edit)
+	var edit := TextEdit.new()
+	edit.name = "TextArea"
+	edit.text = block
+	edit.editable = false
+	edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	edit.custom_minimum_size = Vector2(560, 300)
+	edit.add_theme_font_size_override("font_size", 13)
+	UITheme.apply_input(edit)
+	vbox.add_child(edit)
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	vbox.add_child(row)
 
-	var picker := FileDialog.new()
-	picker.name = "DirPicker"
-	picker.file_mode = FileDialog.FILE_MODE_OPEN_DIR
-	picker.access = FileDialog.ACCESS_FILESYSTEM
-	picker.use_native_dialog = true
-	picker.title = "选择导出目录"
-	picker.dir_selected.connect(func(picked: String) -> void:
-		if DataManager.set_export_dir(picked):
-			dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-			_status_label.text = "已设置导出目录：%s" % dir_edit.text
-			_update_status()
-		else:
-			_show_message("无法使用该目录", "这个目录创建不了或不能写入：\n%s" % picked))
-	dlg.add_child(picker)
+	var copy_btn := Button.new()
+	copy_btn.text = "再复制一次"
+	UITheme.apply_button_primary(copy_btn)
+	copy_btn.pressed.connect(func() -> void:
+		DisplayServer.clipboard_set(block)
+		copy_btn.text = "✓ 已复制"
+		_status_label.text = "投票文字已复制到剪贴板")
+	row.add_child(copy_btn)
 
-	var pick_btn := Button.new()
-	pick_btn.text = "选择文件夹…"
-	UITheme.apply_button_primary(pick_btn)
-	pick_btn.pressed.connect(func() -> void:
-		picker.current_dir = DataManager.effective_export_dir()
-		picker.popup_centered(Vector2i(860, 600)))
-	row.add_child(pick_btn)
-
-	var open_btn := Button.new()
-	open_btn.text = "打开这个目录"
-	UITheme.apply_button(open_btn)
-	open_btn.pressed.connect(func() -> void:
-		OS.shell_show_in_file_manager(ProjectSettings.globalize_path(DataManager.effective_export_dir())))
-	row.add_child(open_btn)
-
-	var reset_btn := Button.new()
-	reset_btn.text = "恢复默认"
-	reset_btn.tooltip_text = "恢复成程序自己的目录（user://exports/）"
-	UITheme.apply_button(reset_btn)
-	reset_btn.pressed.connect(func() -> void:
-		DataManager.reset_export_dir()
-		dir_edit.text = ProjectSettings.globalize_path(DataManager.effective_export_dir())
-		_status_label.text = "已恢复默认导出目录"
-		_update_status())
-	row.add_child(reset_btn)
-
-	var hint := Label.new()
-	hint.text = "选择会记住，下次启动还在（存在 votes.json 里）。"
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(hint, 10, UITheme.TEXT_MUTED)
-	vbox.add_child(hint)
+	var tip := Label.new()
+	tip.text = "组织者可以把多人发的文字攒进一个 txt，一次导入统计"
+	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tip.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	UITheme.style_label(tip, 10, UITheme.TEXT_MUTED)
+	row.add_child(tip)
 
 	dlg.confirmed.connect(func() -> void: dlg.queue_free())
 	dlg.canceled.connect(func() -> void: dlg.queue_free())
-	dlg.popup_centered(Vector2i(660, 250))
+	dlg.popup_centered(Vector2i(640, 500))
+	_status_label.text = "投票文字已复制到剪贴板（%d 个忍者）" % count
+
+
+func _show_message(title: String, msg: String) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = title
+	dlg.dialog_text = msg
+	dlg.ok_button_text = "知道了"
+	dlg.add_theme_stylebox_override("panel",
+		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
+			UITheme.BORDER, 1, 14))
+	add_child(dlg)
+	dlg.confirmed.connect(func() -> void: dlg.queue_free())
+	dlg.canceled.connect(func() -> void: dlg.queue_free())
+	dlg.popup_centered(Vector2i(460, 190))
+
 
 
 # ============================================================
@@ -837,7 +819,9 @@ func _on_organizer_pressed() -> void:
 	dlg.name = "PasswordDialog"
 	dlg.title = "组织者模式"
 	dlg.ok_button_text = "进入"
-	dlg.min_size = Vector2i(400, 180)
+	dlg.min_size = Vector2i(420, 200)
+	# 关掉「按内容自动撑大」，否则配合下面自动换行的提示会算错高度
+	dlg.wrap_controls = false
 	dlg.add_theme_stylebox_override("panel",
 		UITheme.make_style(UITheme.BG, UITheme.RADIUS_LG, Color(0, 0, 0, 0.6),
 			UITheme.BORDER, 1, 14))
@@ -869,6 +853,8 @@ func _on_organizer_pressed() -> void:
 	var hint := Label.new()
 	hint.text = "这是防止群友误入的简易口令，不是安全措施。"
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# 自动换行的标签必须给定宽度，否则测量时宽度为 0，算出超高把弹窗撑爆
+	hint.custom_minimum_size = Vector2(380, 0)
 	UITheme.style_label(hint, 10, UITheme.TEXT_MUTED)
 	vbox.add_child(hint)
 
@@ -887,7 +873,7 @@ func _on_organizer_pressed() -> void:
 	dlg.confirmed.connect(try_once)
 	edit.text_submitted.connect(func(_t: String) -> void: try_once.call())
 	dlg.canceled.connect(func() -> void: dlg.queue_free())
-	dlg.popup_centered(Vector2i(420, 200))
+	dlg.popup_centered(Vector2i(420, 210))
 	edit.grab_focus()
 
 
@@ -1156,8 +1142,6 @@ func _update_status() -> void:
 	var bans := DataManager.get_bans()
 	# Ban 名单的明细现在在右侧面板里，状态栏只留一个计数
 	parts.append("已 Ban %d 个" % bans.size())
-	if DataManager.has_custom_export_dir():
-		parts.append("导出到 %s" % DataManager.export_dir.get_file())
 	if _loading:
 		parts.append("加载中…")
 	_status_label.text = "  |  ".join(parts)
@@ -1184,4 +1168,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		accept_event()
 	elif event.is_action_pressed("clear_all_votes"):
 		_on_clear_pressed()
+		accept_event()
+	elif event.is_action_pressed("copy_vote_text"):
+		_on_copy_text_pressed()
 		accept_event()
